@@ -7,6 +7,7 @@ PyQt6 application – 4-player Tarock tournament recorder.
 
 from __future__ import annotations
 
+import argparse
 import io
 import sys
 import csv
@@ -197,10 +198,15 @@ class GraphWindow(QWidget):
     FS_TICK   = 22
     FS_LEGEND = 24
 
-    def __init__(self, entries: list[dict], mapping: dict[int, str]) -> None:
+    def __init__(self, entries: list[dict], mapping: dict[int, str], speed: float = 1.0) -> None:
         super().__init__()
         self.setWindowTitle("Tournament Results")
         self.resize(960, 700)
+
+        # Apply speed multiplier to all intervals (>1 = slower, <1 = faster)
+        self._ms_rank  = max(100, int(self.INTERVAL_MS_RANK  * speed))
+        self._ms_pause = max(100, int(self.INTERVAL_MS_PAUSE * speed))
+        self._ms_graph = max(100, int(self.INTERVAL_MS_GRAPH * speed))
 
         self._mapping = mapping
         self._rounds  = sorted({e["round"] for e in entries})
@@ -257,12 +263,12 @@ class GraphWindow(QWidget):
         back_btn = QPushButton("◀")
         back_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         back_btn.setStyleSheet(btn_style)
-        back_btn.clicked.connect(self._go_back)
+        back_btn.clicked.connect(self._user_back)
 
         fwd_btn = QPushButton("▶")
         fwd_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         fwd_btn.setStyleSheet(btn_style)
-        fwd_btn.clicked.connect(self._go_forward)
+        fwd_btn.clicked.connect(self._user_forward)
 
         self._pause_btn.setStyleSheet(btn_style)
 
@@ -315,14 +321,14 @@ class GraphWindow(QWidget):
 
         self._stack.setCurrentIndex(0)  # start on splash
 
-        QShortcut(QKeySequence(Qt.Key.Key_Left),   self).activated.connect(self._go_back)
-        QShortcut(QKeySequence(Qt.Key.Key_Right),  self).activated.connect(self._go_forward)
+        QShortcut(QKeySequence(Qt.Key.Key_Left),   self).activated.connect(self._user_back)
+        QShortcut(QKeySequence(Qt.Key.Key_Right),  self).activated.connect(self._user_forward)
         QShortcut(QKeySequence(Qt.Key.Key_F11),    self).activated.connect(self._toggle_fullscreen)
         QShortcut(QKeySequence(Qt.Key.Key_Space),  self).activated.connect(self._toggle_pause)
         QShortcut(QKeySequence(Qt.Key.Key_Escape), self).activated.connect(self._exit_fullscreen)
 
         self._timer = QTimer(self)
-        self._timer.setInterval(self.INTERVAL_MS_RANK)
+        self._timer.setInterval(self._ms_rank)
         self._timer.timeout.connect(self._advance)
         # Start paused — press Space or Resume to begin auto-advance
 
@@ -342,12 +348,12 @@ class GraphWindow(QWidget):
         back_btn = QPushButton("◀")
         back_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         back_btn.setStyleSheet(btn_style)
-        back_btn.clicked.connect(self._go_back)
+        back_btn.clicked.connect(self._user_back)
 
         fwd_btn = QPushButton("▶")
         fwd_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         fwd_btn.setStyleSheet(btn_style)
-        fwd_btn.clicked.connect(self._go_forward)
+        fwd_btn.clicked.connect(self._user_forward)
 
         self._splash_pause_btn = QPushButton("Auto")
         self._splash_pause_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -530,12 +536,12 @@ class GraphWindow(QWidget):
         rank_back_btn = QPushButton("◀")
         rank_back_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         rank_back_btn.setStyleSheet(btn_style)
-        rank_back_btn.clicked.connect(self._go_back)
+        rank_back_btn.clicked.connect(self._user_back)
 
         rank_fwd_btn = QPushButton("▶")
         rank_fwd_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         rank_fwd_btn.setStyleSheet(btn_style)
-        rank_fwd_btn.clicked.connect(self._go_forward)
+        rank_fwd_btn.clicked.connect(self._user_forward)
 
         pause_btn = QPushButton("Auto")
         pause_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -691,13 +697,21 @@ class GraphWindow(QWidget):
             self._draw_comparison(self._frame - 1)
 
     def _set_interval_for_current(self) -> None:
-        interval = self.INTERVAL_MS_RANK if self._frame == 0 else self.INTERVAL_MS_GRAPH
+        interval = self._ms_rank if self._frame == 0 else self._ms_graph
         if self._timer.interval() != interval:
             active = self._timer.isActive()
             self._timer.stop()
             self._timer.setInterval(interval)
             if active:
                 self._timer.start()
+
+    def _user_forward(self) -> None:
+        self._pause()
+        self._go_forward()
+
+    def _user_back(self) -> None:
+        self._pause()
+        self._go_back()
 
     def _go_forward(self) -> None:
         if self._skip_splash():
@@ -710,7 +724,7 @@ class GraphWindow(QWidget):
                 if self._rank_reveal == len(self._ranked) and self._timer.isActive():
                     # All rows now visible — give readers 10 s before graphs start
                     self._timer.stop()
-                    self._timer.setInterval(self.INTERVAL_MS_PAUSE)
+                    self._timer.setInterval(self._ms_pause)
                     self._timer.start()
             else:
                 # All rows revealed — advance to first graph
@@ -752,6 +766,13 @@ class GraphWindow(QWidget):
                     self._rank_tbl.setRowHidden(i, False)
             self._set_interval_for_current()
             self._show_frame()
+
+    def _pause(self) -> None:
+        if self._timer.isActive():
+            self._timer.stop()
+            self._pause_btn.setText("Auto")
+            self._rank_pause_btn.setText("Auto")
+            self._splash_pause_btn.setText("Auto")
 
     def _advance(self) -> None:
         self._go_forward()
@@ -796,9 +817,10 @@ class MainWindow(QWidget):
     CSV_FILE = Path("result.csv")
     MAP_FILE = Path("player_numbers.csv")
 
-    def __init__(self) -> None:
+    def __init__(self, speed: float = 1.0) -> None:
         super().__init__()
         self.setWindowTitle("Tarock Tournament Manager")
+        self._speed = speed
 
         font = QFont()
         font.setPointSize(18)
@@ -1231,7 +1253,7 @@ class MainWindow(QWidget):
         if not self.entries:
             self._set_status("No entries to graph.", error=True)
             return
-        self._graph_window = GraphWindow(self.entries, self.mapping)
+        self._graph_window = GraphWindow(self.entries, self.mapping, speed=self._speed)
         self._graph_window.show()
 
     # ------------------------------------------------------------------
@@ -1275,8 +1297,15 @@ class MainWindow(QWidget):
 
 # ----------------------------------------------------------------------
 def main() -> None:
-    app = QApplication(sys.argv)
-    win = MainWindow()
+    parser = argparse.ArgumentParser(description="Tarock Tournament Manager")
+    parser.add_argument(
+        "--speed", type=float, default=1.0, metavar="MULTIPLIER",
+        help="Timer speed multiplier (0.5 = twice as fast, 2.0 = twice as slow, default 1.0)",
+    )
+    args, qt_args = parser.parse_known_args()
+
+    app = QApplication([sys.argv[0]] + qt_args)
+    win = MainWindow(speed=args.speed)
     win.resize(1000, 600)
     win.show()
     sys.exit(app.exec())
