@@ -31,8 +31,9 @@ from PyQt6.QtWidgets import (
     QHeaderView,
     QSizePolicy,
 )
-from PyQt6.QtGui import QIntValidator, QKeySequence, QShortcut, QFont, QColor, QPainterPath, QRegion
+from PyQt6.QtGui import QIntValidator, QKeySequence, QShortcut, QFont, QColor, QPainterPath, QRegion, QPainter
 from PyQt6.QtCore import Qt, QTimer, QRectF, QEvent, QObject
+from PyQt6.QtWidgets import QStyledItemDelegate
 
 try:
     from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
@@ -41,6 +42,85 @@ try:
     _MATPLOTLIB_OK = True
 except ImportError:
     _MATPLOTLIB_OK = False
+
+
+class _RoundedRowDelegate(QStyledItemDelegate):
+    """Draws each table row as a rounded card spanning all columns, text centred."""
+    RADIUS = 12
+    V_PAD  = 5   # gap above and below the card within the cell height
+
+    def paint(self, painter, option, index) -> None:
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        table = self.parent()
+        col   = index.column()
+
+        # Draw the full-row background once, from the leftmost column
+        if col == 0:
+            bg_brush = index.data(Qt.ItemDataRole.BackgroundRole)
+            bg_color = bg_brush.color() if bg_brush else QColor("#E8E8E8")
+            bg_color.setAlpha(195)
+
+            total_w = sum(table.columnWidth(c) for c in range(table.columnCount()))
+            card = QRectF(
+                option.rect.x(),
+                option.rect.y() + self.V_PAD,
+                total_w,
+                option.rect.height() - self.V_PAD * 2,
+            )
+            painter.setBrush(bg_color)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawRoundedRect(card, self.RADIUS, self.RADIUS)
+
+        # Draw text centred in each cell
+        text = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
+        font_data = index.data(Qt.ItemDataRole.FontRole)
+        if font_data:
+            painter.setFont(font_data)
+        painter.setPen(QColor("#111111"))
+        painter.drawText(option.rect, Qt.AlignmentFlag.AlignCenter, text)
+
+        painter.restore()
+
+
+class _RoundedHeader(QHeaderView):
+    """Horizontal header that paints one rounded card spanning all sections."""
+    RADIUS = 12
+    V_PAD  = 5
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(Qt.Orientation.Horizontal, parent)
+        self.setMinimumHeight(80)
+
+    def paintSection(self, painter, rect, logical_index) -> None:
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # Draw full-width background card once from the first section
+        if logical_index == 0:
+            total_w = sum(self.sectionSize(i) for i in range(self.count()))
+            card = QRectF(
+                rect.x(),
+                rect.y() + self.V_PAD,
+                total_w,
+                rect.height() - self.V_PAD * 2,
+            )
+            painter.setBrush(QColor("#FF0000"))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawRoundedRect(card, self.RADIUS, self.RADIUS)
+
+        # Draw header label centred
+        text = self.model().headerData(
+            logical_index, Qt.Orientation.Horizontal, Qt.ItemDataRole.DisplayRole
+        )
+        font = QFont()
+        font.setBold(True)
+        font.setPointSize(22)
+        painter.setFont(font)
+        painter.setPen(QColor("white"))
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, str(text or ""))
+        painter.restore()
 
 
 class _BottomRoundedMask(QObject):
@@ -219,6 +299,8 @@ class GraphWindow(QWidget):
         page.setStyleSheet("background-color: #0d0d1a;")
 
         tbl = QTableWidget(len(self._ranked), 3)
+        rounded_header = _RoundedHeader(tbl)
+        tbl.setHorizontalHeader(rounded_header)
         tbl.setHorizontalHeaderLabels(["Rank", "Player", "Points"])
         tbl.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         tbl.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
@@ -226,23 +308,15 @@ class GraphWindow(QWidget):
         tbl.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         tbl.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
         tbl.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        tbl.setShowGrid(True)
+        tbl.setShowGrid(False)
         tbl.setStyleSheet("""
             QTableWidget {
-                font-size: 30px;
-                gridline-color: white;
+                gridline-color: transparent;
                 border: none;
-                color: #111;
-            }
-            QHeaderView::section {
-                background-color: #FF0000;
-                color: white;
-                font-size: 32px;
-                font-weight: bold;
-                padding: 10px;
-                border: 1px solid white;
+                background-color: #0d0d1a;
             }
         """)
+        tbl.setItemDelegate(_RoundedRowDelegate(tbl))
 
         bold_font = QFont()
         bold_font.setBold(True)
@@ -258,9 +332,7 @@ class GraphWindow(QWidget):
 
             for col, text in enumerate([rank_str, name, total]):
                 item = QTableWidgetItem(text)
-                item.setTextAlignment(
-                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
-                )
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 if i in self._ROW_BG:
                     item.setBackground(self._ROW_BG[i])
                     item.setFont(bold_font)
@@ -324,7 +396,7 @@ class GraphWindow(QWidget):
         table_frame.setStyleSheet("""
             QWidget#tableFrame {
                 background-color: #0d0d1a;
-                border: 2px solid #FF0000;
+                border: 2px solid black;
                 border-top: none;
                 border-radius: 0 0 16px 16px;
             }
