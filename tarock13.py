@@ -60,7 +60,7 @@ class _RoundedRowDelegate(QStyledItemDelegate):
         if col == 0:
             bg_brush = index.data(Qt.ItemDataRole.BackgroundRole)
             bg_color = bg_brush.color() if bg_brush else QColor("#E8E8E8")
-            bg_color.setAlpha(30)
+            bg_color.setAlpha(15)
 
             total_w = sum(table.columnWidth(c) for c in range(table.columnCount()))
             card = QRectF(
@@ -172,7 +172,8 @@ class GraphWindow(QWidget):
 
         self._mapping = mapping
         self._rounds  = sorted({e["round"] for e in entries})
-        self._frame   = 0
+        self._frame        = 0
+        self._rank_reveal  = 0   # how many ranking rows are currently visible
 
         # Accumulate points per player per round
         per_round: dict[str, dict[int, int]] = {}
@@ -200,7 +201,7 @@ class GraphWindow(QWidget):
         self._total_frames = 1 + len(self._others)
 
         # ---- Pause button (shared across both pages) ----
-        self._pause_btn = QPushButton("Pause")
+        self._pause_btn = QPushButton("Resume")
         self._pause_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._pause_btn.clicked.connect(self._toggle_pause)
 
@@ -216,8 +217,8 @@ class GraphWindow(QWidget):
         self._ax = self._fig.add_subplot(111)
 
         btn_style = (
-            "font-size: 40px; padding: 12px 40px; color: white;"
-            " background-color: black; border-radius: 10px;"
+            "font-size: 40px; padding: 12px 40px; color: #FF0000;"
+            " background-color: white; border-radius: 10px;"
         )
         back_btn = QPushButton("◀")
         back_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -284,11 +285,12 @@ class GraphWindow(QWidget):
         QShortcut(QKeySequence(Qt.Key.Key_Left),  self).activated.connect(self._go_back)
         QShortcut(QKeySequence(Qt.Key.Key_Right), self).activated.connect(self._go_forward)
         QShortcut(QKeySequence(Qt.Key.Key_F11),   self).activated.connect(self._toggle_fullscreen)
+        QShortcut(QKeySequence(Qt.Key.Key_Space), self).activated.connect(self._toggle_pause)
 
         self._timer = QTimer(self)
         self._timer.setInterval(self.INTERVAL_MS)
         self._timer.timeout.connect(self._advance)
-        self._timer.start()
+        # Start paused — press Space or Resume to begin auto-advance
 
     # ------------------------------------------------------------------
     def _player_name(self, pnum: str) -> str:
@@ -344,9 +346,14 @@ class GraphWindow(QWidget):
                     item.setFont(normal_font)
                 tbl.setItem(i, col, item)
 
+        # All rows start hidden; revealed one-by-one via navigation
+        for i in range(tbl.rowCount()):
+            tbl.setRowHidden(i, True)
+        self._rank_tbl = tbl
+
         btn_style = (
-            "font-size: 40px; padding: 12px 40px; color: white;"
-            " background-color: black; border-radius: 10px;"
+            "font-size: 40px; padding: 12px 40px; color: #FF0000;"
+            " background-color: white; border-radius: 10px;"
         )
 
         rank_back_btn = QPushButton("◀")
@@ -359,7 +366,7 @@ class GraphWindow(QWidget):
         rank_fwd_btn.setStyleSheet(btn_style)
         rank_fwd_btn.clicked.connect(self._go_forward)
 
-        pause_btn = QPushButton("Pause")
+        pause_btn = QPushButton("Resume")
         pause_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         pause_btn.clicked.connect(self._toggle_pause)
         pause_btn.setStyleSheet(btn_style)
@@ -455,17 +462,45 @@ class GraphWindow(QWidget):
             self._stack.setCurrentIndex(1)
             self._draw_comparison(self._frame - 1)
 
-    def _advance(self) -> None:
-        self._frame = (self._frame + 1) % self._total_frames
-        self._show_frame()
-
     def _go_forward(self) -> None:
-        self._frame = (self._frame + 1) % self._total_frames
-        self._show_frame()
+        if self._frame == 0:
+            if self._rank_reveal < len(self._ranked):
+                # Reveal the next row (entries shown from top, rank 1 first)
+                self._rank_tbl.setRowHidden(self._rank_reveal, False)
+                self._rank_reveal += 1
+            else:
+                # All rows revealed — advance to first graph
+                self._frame = 1
+                self._show_frame()
+        else:
+            self._frame += 1
+            if self._frame >= self._total_frames:
+                # Wrap back to ranking with nothing revealed
+                self._frame = 0
+                self._rank_reveal = 0
+                for i in range(len(self._ranked)):
+                    self._rank_tbl.setRowHidden(i, True)
+                self._stack.setCurrentIndex(0)
+            else:
+                self._show_frame()
 
     def _go_back(self) -> None:
-        self._frame = (self._frame - 1) % self._total_frames
-        self._show_frame()
+        if self._frame == 0:
+            if self._rank_reveal > 0:
+                # Hide the last revealed row
+                self._rank_reveal -= 1
+                self._rank_tbl.setRowHidden(self._rank_reveal, True)
+        else:
+            self._frame -= 1
+            if self._frame == 0:
+                # Going back to ranking — show all rows
+                self._rank_reveal = len(self._ranked)
+                for i in range(len(self._ranked)):
+                    self._rank_tbl.setRowHidden(i, False)
+            self._show_frame()
+
+    def _advance(self) -> None:
+        self._go_forward()
 
     def _toggle_fullscreen(self) -> None:
         if self.isFullScreen():
