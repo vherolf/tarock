@@ -47,7 +47,7 @@ except ImportError:
 class _RoundedRowDelegate(QStyledItemDelegate):
     """Draws each table row as a rounded card spanning all columns, text centred."""
     RADIUS = 12
-    V_PAD  = 5   # gap above and below the card within the cell height
+    V_PAD  = 8   # gap above and below the card within the cell height
 
     def paint(self, painter, option, index) -> None:
         painter.save()
@@ -58,15 +58,14 @@ class _RoundedRowDelegate(QStyledItemDelegate):
 
         # Draw the full-row background once, from the leftmost column
         if col == 0:
-            bg_brush = index.data(Qt.ItemDataRole.BackgroundRole)
-            bg_color = bg_brush.color() if bg_brush else QColor("#E8E8E8")
-            bg_color.setAlpha(15)
+            bg_color = QColor("#0d0d1a")
+            bg_color.setAlpha(220)
 
             total_w = sum(table.columnWidth(c) for c in range(table.columnCount()))
             card = QRectF(
-                option.rect.x(),
+                option.rect.x() + self.V_PAD,
                 option.rect.y() + self.V_PAD,
-                total_w,
+                total_w - self.V_PAD * 2,
                 option.rect.height() - self.V_PAD * 2,
             )
             painter.setBrush(bg_color)
@@ -199,7 +198,7 @@ class GraphWindow(QWidget):
         self._ranked = sorted(players, key=lambda p: -self._cumulative[p][-1])
         self._winner = self._ranked[0]
         self._others = [p for p in self._ranked if p != self._winner]
-        self._total_frames = 1 + len(self._others)
+        self._total_frames = 1 + len(self._others) + 1  # +1 for all-players overview
 
         # ---- Pause button (shared across both pages) ----
         self._pause_btn = QPushButton("Resume")
@@ -214,7 +213,9 @@ class GraphWindow(QWidget):
         graph_page = QWidget()
         graph_page.setStyleSheet("background-color: #0d0d1a;")
         self._fig = Figure(tight_layout=True)
+        self._fig.patch.set_visible(False)
         self._canvas = FigureCanvas(self._fig)
+        self._canvas.setStyleSheet("background: transparent;")
         self._ax = self._fig.add_subplot(111)
 
         btn_style = (
@@ -264,8 +265,7 @@ class GraphWindow(QWidget):
 
         canvas_wrapper = QWidget()
         canvas_wrapper.setStyleSheet(
-            "border: 2px solid #FF0000; border-top: none;"
-            " border-radius: 0 0 16px 16px;"
+            "border: none;"
         )
         canvas_layout = QVBoxLayout(canvas_wrapper)
         canvas_layout.setContentsMargins(0, 0, 0, 0)
@@ -428,6 +428,7 @@ class GraphWindow(QWidget):
     # ------------------------------------------------------------------
     def _draw_comparison(self, idx: int) -> None:
         self._ax.clear()
+        self._ax.set_facecolor("none")
         xs = self._rounds
 
         winner_name = self._player_name(self._winner)
@@ -442,23 +443,79 @@ class GraphWindow(QWidget):
         self._ax.plot(xs, winner_ys, marker="o", color="gold",
                       linewidth=6, markersize=16, label=f"{winner_name} [Winner]")
 
+        # Annotate final points for both players
+        last_x = xs[-1]
+        self._ax.annotate(
+            f"{other_name}  {other_ys[-1]}",
+            xy=(last_x, other_ys[-1]),
+            xytext=(8, 0), textcoords="offset points",
+            va="center", ha="left",
+            fontsize=self.FS_LABEL, color="steelblue", fontweight="bold",
+        )
+        self._ax.annotate(
+            f"{winner_name}  {winner_ys[-1]}",
+            xy=(last_x, winner_ys[-1]),
+            xytext=(8, 0), textcoords="offset points",
+            va="center", ha="left",
+            fontsize=self.FS_LABEL, color="gold", fontweight="bold",
+        )
+
         self._ax.set_title(
             f"[Winner] {winner_name}  vs  {other_name}"
             f"  ({idx + 1} / {len(self._others)})",
-            fontsize=self.FS_TITLE,
+            fontsize=self.FS_TITLE, color="white",
         )
-        self._ax.set_xlabel("Round", fontsize=self.FS_LABEL)
-        self._ax.set_ylabel("Cumulative Points", fontsize=self.FS_LABEL)
+        self._ax.set_xlabel("Round", fontsize=self.FS_LABEL, color="white")
+        self._ax.set_ylabel("Cumulative Points", fontsize=self.FS_LABEL, color="white")
         self._ax.legend(loc="upper left", fontsize=self.FS_LEGEND)
         self._ax.grid(True, linestyle="--", alpha=0.5)
         self._ax.set_xticks(xs)
-        self._ax.tick_params(axis="both", labelsize=self.FS_TICK)
+        self._ax.tick_params(axis="both", labelsize=self.FS_TICK, colors="white")
+        for spine in self._ax.spines.values():
+            spine.set_edgecolor("white")
         self._canvas.draw()
 
     # ------------------------------------------------------------------
+    def _draw_all_players(self) -> None:
+        self._ax.clear()
+        self._ax.set_facecolor("none")
+        xs = self._rounds
+        colors = [
+            "gold", "silver", "#CD7F32", "steelblue", "tomato", "limegreen",
+            "orchid", "cyan", "orange", "hotpink", "yellowgreen", "aquamarine",
+            "cornflowerblue", "salmon",
+        ]
+        for i, pnum in enumerate(self._ranked):
+            name = self._player_name(pnum)
+            ys   = self._cumulative[pnum]
+            color = colors[i % len(colors)]
+            self._ax.plot(xs, ys, marker="o", linewidth=4, markersize=10,
+                          color=color, label=name)
+            self._ax.annotate(
+                f"{name}  {ys[-1]}",
+                xy=(xs[-1], ys[-1]),
+                xytext=(8, 0), textcoords="offset points",
+                va="center", ha="left",
+                fontsize=self.FS_TICK, color=color, fontweight="bold",
+            )
+        self._ax.set_title("All Players — Final Standings", fontsize=self.FS_TITLE, color="white")
+        self._ax.set_xlabel("Round", fontsize=self.FS_LABEL, color="white")
+        self._ax.set_ylabel("Cumulative Points", fontsize=self.FS_LABEL, color="white")
+        self._ax.legend(loc="upper left", fontsize=self.FS_LEGEND - 4,
+                        ncol=2, framealpha=0.4)
+        self._ax.grid(True, linestyle="--", alpha=0.5)
+        self._ax.set_xticks(xs)
+        self._ax.tick_params(axis="both", labelsize=self.FS_TICK, colors="white")
+        for spine in self._ax.spines.values():
+            spine.set_edgecolor("white")
+        self._canvas.draw()
+
     def _show_frame(self) -> None:
         if self._frame == 0:
             self._stack.setCurrentIndex(0)
+        elif self._frame == self._total_frames - 1:
+            self._stack.setCurrentIndex(1)
+            self._draw_all_players()
         else:
             self._stack.setCurrentIndex(1)
             self._draw_comparison(self._frame - 1)
@@ -502,6 +559,11 @@ class GraphWindow(QWidget):
                 # Hide the last revealed row
                 self._rank_reveal -= 1
                 self._rank_tbl.setRowHidden(self._rank_reveal, True)
+            else:
+                # At the very start — wrap to the last frame (all-players graph)
+                self._frame = self._total_frames - 1
+                self._set_interval_for_current()
+                self._show_frame()
         else:
             self._frame -= 1
             if self._frame == 0:
