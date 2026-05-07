@@ -60,7 +60,7 @@ class _RoundedRowDelegate(QStyledItemDelegate):
         if col == 0:
             bg_brush = index.data(Qt.ItemDataRole.BackgroundRole)
             bg_color = bg_brush.color() if bg_brush else QColor("#E8E8E8")
-            bg_color.setAlpha(195)
+            bg_color.setAlpha(30)
 
             total_w = sum(table.columnWidth(c) for c in range(table.columnCount()))
             card = QRectF(
@@ -78,7 +78,7 @@ class _RoundedRowDelegate(QStyledItemDelegate):
         font_data = index.data(Qt.ItemDataRole.FontRole)
         if font_data:
             painter.setFont(font_data)
-        painter.setPen(QColor("#111111"))
+        painter.setPen(QColor("white"))
         painter.drawText(option.rect, Qt.AlignmentFlag.AlignCenter, text)
 
         painter.restore()
@@ -336,6 +336,9 @@ class GraphWindow(QWidget):
                 if i in self._ROW_BG:
                     item.setBackground(self._ROW_BG[i])
                     item.setFont(bold_font)
+                elif i >= 3:
+                    item.setBackground(QColor("#FF0000"))
+                    item.setFont(normal_font)
                 else:
                     item.setBackground(self._ROW_ALT[i % 2])
                     item.setFont(normal_font)
