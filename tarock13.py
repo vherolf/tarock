@@ -466,11 +466,11 @@ class GraphWindow(QWidget):
         self._ax.set_xlabel("Round", fontsize=self.FS_LABEL, color="white")
         self._ax.set_ylabel("Cumulative Points", fontsize=self.FS_LABEL, color="white")
         self._ax.legend(loc="upper left", fontsize=self.FS_LEGEND)
-        self._ax.grid(True, linestyle="--", alpha=0.5)
+        self._ax.grid(True, linestyle="--", alpha=0.5, color="white")
         self._ax.set_xticks(xs)
         self._ax.tick_params(axis="both", labelsize=self.FS_TICK, colors="white")
         for spine in self._ax.spines.values():
-            spine.set_edgecolor("white")
+            spine.set_visible(False)
         self._canvas.draw()
 
     # ------------------------------------------------------------------
@@ -501,11 +501,11 @@ class GraphWindow(QWidget):
         self._ax.set_ylabel("Cumulative Points", fontsize=self.FS_LABEL, color="white")
         self._ax.legend(loc="upper left", fontsize=self.FS_LEGEND - 4,
                         ncol=2, framealpha=0.4)
-        self._ax.grid(True, linestyle="--", alpha=0.5)
+        self._ax.grid(True, linestyle="--", alpha=0.5, color="white")
         self._ax.set_xticks(xs)
         self._ax.tick_params(axis="both", labelsize=self.FS_TICK, colors="white")
         for spine in self._ax.spines.values():
-            spine.set_edgecolor("white")
+            spine.set_visible(False)
         self._canvas.draw()
 
     def _show_frame(self) -> None:
