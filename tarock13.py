@@ -212,10 +212,8 @@ class GraphWindow(QWidget):
         # ---- Page 1: matplotlib canvas ----
         graph_page = QWidget()
         graph_page.setStyleSheet("background-color: #0d0d1a;")
-        self._fig = Figure(tight_layout=True)
-        self._fig.patch.set_visible(False)
+        self._fig = Figure(tight_layout=True, facecolor="black")
         self._canvas = FigureCanvas(self._fig)
-        self._canvas.setStyleSheet("background: transparent;")
         self._ax = self._fig.add_subplot(111)
 
         btn_style = (
@@ -428,7 +426,7 @@ class GraphWindow(QWidget):
     # ------------------------------------------------------------------
     def _draw_comparison(self, idx: int) -> None:
         self._ax.clear()
-        self._ax.set_facecolor("none")
+        self._ax.set_facecolor("black")
         xs = self._rounds
 
         winner_name = self._player_name(self._winner)
@@ -478,7 +476,7 @@ class GraphWindow(QWidget):
     # ------------------------------------------------------------------
     def _draw_all_players(self) -> None:
         self._ax.clear()
-        self._ax.set_facecolor("none")
+        self._ax.set_facecolor("black")
         xs = self._rounds
         colors = [
             "gold", "silver", "#CD7F32", "steelblue", "tomato", "limegreen",
