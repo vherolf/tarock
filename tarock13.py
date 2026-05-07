@@ -151,7 +151,8 @@ class _BottomRoundedMask(QObject):
 
 
 class GraphWindow(QWidget):
-    INTERVAL_MS = 10_000
+    INTERVAL_MS_RANK  = 1_000
+    INTERVAL_MS_GRAPH = 10_000
 
     # frame 0     → Qt ranking table (proper emoji, fills screen)
     # frame 1..N  → matplotlib winner-vs-player comparison
@@ -288,7 +289,7 @@ class GraphWindow(QWidget):
         QShortcut(QKeySequence(Qt.Key.Key_Space), self).activated.connect(self._toggle_pause)
 
         self._timer = QTimer(self)
-        self._timer.setInterval(self.INTERVAL_MS)
+        self._timer.setInterval(self.INTERVAL_MS_RANK)
         self._timer.timeout.connect(self._advance)
         # Start paused — press Space or Resume to begin auto-advance
 
@@ -462,6 +463,15 @@ class GraphWindow(QWidget):
             self._stack.setCurrentIndex(1)
             self._draw_comparison(self._frame - 1)
 
+    def _set_interval_for_current(self) -> None:
+        interval = self.INTERVAL_MS_RANK if self._frame == 0 else self.INTERVAL_MS_GRAPH
+        if self._timer.interval() != interval:
+            active = self._timer.isActive()
+            self._timer.stop()
+            self._timer.setInterval(interval)
+            if active:
+                self._timer.start()
+
     def _go_forward(self) -> None:
         if self._frame == 0:
             if self._rank_reveal < len(self._ranked):
@@ -471,6 +481,7 @@ class GraphWindow(QWidget):
             else:
                 # All rows revealed — advance to first graph
                 self._frame = 1
+                self._set_interval_for_current()
                 self._show_frame()
         else:
             self._frame += 1
@@ -480,6 +491,7 @@ class GraphWindow(QWidget):
                 self._rank_reveal = 0
                 for i in range(len(self._ranked)):
                     self._rank_tbl.setRowHidden(i, True)
+                self._set_interval_for_current()
                 self._stack.setCurrentIndex(0)
             else:
                 self._show_frame()
@@ -497,6 +509,7 @@ class GraphWindow(QWidget):
                 self._rank_reveal = len(self._ranked)
                 for i in range(len(self._ranked)):
                     self._rank_tbl.setRowHidden(i, False)
+            self._set_interval_for_current()
             self._show_frame()
 
     def _advance(self) -> None:
