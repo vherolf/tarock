@@ -29,9 +29,10 @@ from PyQt6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QHeaderView,
+    QSizePolicy,
 )
-from PyQt6.QtGui import QIntValidator, QKeySequence, QShortcut, QFont, QColor
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QIntValidator, QKeySequence, QShortcut, QFont, QColor, QPainterPath, QRegion
+from PyQt6.QtCore import Qt, QTimer, QRectF, QEvent, QObject
 
 try:
     from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
@@ -40,6 +41,33 @@ try:
     _MATPLOTLIB_OK = True
 except ImportError:
     _MATPLOTLIB_OK = False
+
+
+class _BottomRoundedMask(QObject):
+    """Keeps a widget's painted area clipped to a shape with rounded bottom corners."""
+    def __init__(self, widget: QWidget, radius: int) -> None:
+        super().__init__(widget)
+        self._radius = radius
+        widget.installEventFilter(self)
+        self._apply(widget)
+
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
+        if event.type() == QEvent.Type.Resize:
+            self._apply(obj)
+        return False
+
+    def _apply(self, widget: QWidget) -> None:
+        r = QRectF(widget.rect())
+        rad = float(self._radius)
+        path = QPainterPath()
+        path.moveTo(r.left(), r.top())
+        path.lineTo(r.right(), r.top())
+        path.lineTo(r.right(), r.bottom() - rad)
+        path.arcTo(r.right() - rad * 2, r.bottom() - rad * 2, rad * 2, rad * 2, 0, -90)
+        path.lineTo(r.left() + rad, r.bottom())
+        path.arcTo(r.left(), r.bottom() - rad * 2, rad * 2, rad * 2, 270, -90)
+        path.closeSubpath()
+        widget.setMask(QRegion(path.toFillPolygon().toPolygon(), Qt.FillRule.WindingFill))
 
 
 class GraphWindow(QWidget):
@@ -102,11 +130,15 @@ class GraphWindow(QWidget):
 
         # ---- Page 1: matplotlib canvas ----
         graph_page = QWidget()
+        graph_page.setStyleSheet("background-color: #0d0d1a;")
         self._fig = Figure(tight_layout=True)
         self._canvas = FigureCanvas(self._fig)
         self._ax = self._fig.add_subplot(111)
 
-        btn_style = "font-size: 40px; padding: 12px 40px; color: white; background-color: black;"
+        btn_style = (
+            "font-size: 40px; padding: 12px 40px; color: white;"
+            " background-color: black; border-radius: 10px;"
+        )
         back_btn = QPushButton("◀")
         back_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         back_btn.setStyleSheet(btn_style)
@@ -119,21 +151,59 @@ class GraphWindow(QWidget):
 
         self._pause_btn.setStyleSheet(btn_style)
 
-        top_bar = QHBoxLayout()
-        top_bar.addStretch()
-        top_bar.addWidget(back_btn)
-        top_bar.addWidget(fwd_btn)
-        top_bar.addWidget(self._pause_btn)
+        self._graph_fs_btn = QPushButton("⛶ Fullscreen")
+        self._graph_fs_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._graph_fs_btn.setStyleSheet(btn_style)
+        self._graph_fs_btn.clicked.connect(self._toggle_fullscreen)
+
+        graph_top_bar = QWidget()
+        graph_top_bar.setStyleSheet(
+            "background-color: #FF0000; border-radius: 16px 16px 0 0;"
+        )
+        graph_header_lbl = QLabel("Pony Tarock Championship")
+        graph_header_lbl.setStyleSheet(
+            "color: white; font-size: 36px; font-weight: bold;"
+            " background-color: transparent;"
+        )
+
+        graph_top_bar_layout = QHBoxLayout(graph_top_bar)
+        graph_top_bar_layout.setContentsMargins(24, 8, 12, 8)
+        graph_top_bar_layout.addWidget(graph_header_lbl)
+        graph_top_bar_layout.addStretch(1)
+        graph_top_bar_layout.addWidget(back_btn)
+        graph_top_bar_layout.addWidget(fwd_btn)
+        graph_top_bar_layout.addWidget(self._pause_btn)
+        graph_top_bar_layout.addWidget(self._graph_fs_btn)
+
+        self._canvas.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
+
+        canvas_wrapper = QWidget()
+        canvas_wrapper.setStyleSheet(
+            "border: 2px solid #FF0000; border-top: none;"
+            " border-radius: 0 0 16px 16px;"
+        )
+        canvas_layout = QVBoxLayout(canvas_wrapper)
+        canvas_layout.setContentsMargins(0, 0, 0, 0)
+        canvas_layout.addWidget(self._canvas)
 
         glay = QVBoxLayout(graph_page)
-        glay.addLayout(top_bar)
-        glay.addWidget(self._canvas)
+        glay.setContentsMargins(24, 24, 24, 24)
+        glay.setSpacing(0)
+        glay.addWidget(graph_top_bar, 0)
+        glay.addWidget(canvas_wrapper, 1)
         self._stack.addWidget(graph_page)
 
         main_layout = QVBoxLayout(self)
         main_layout.addWidget(self._stack)
 
         self._stack.setCurrentIndex(0)
+
+        QShortcut(QKeySequence(Qt.Key.Key_Left),  self).activated.connect(self._go_back)
+        QShortcut(QKeySequence(Qt.Key.Key_Right), self).activated.connect(self._go_forward)
+        QShortcut(QKeySequence(Qt.Key.Key_F11),   self).activated.connect(self._toggle_fullscreen)
 
         self._timer = QTimer(self)
         self._timer.setInterval(self.INTERVAL_MS)
@@ -148,12 +218,6 @@ class GraphWindow(QWidget):
         page = QWidget()
         page.setStyleSheet("background-color: #0d0d1a;")
 
-        title = QLabel("Tournament Ranking")
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setStyleSheet(
-            "color: white; font-size: 42px; font-weight: bold; padding: 18px 0;"
-        )
-
         tbl = QTableWidget(len(self._ranked), 3)
         tbl.setHorizontalHeaderLabels(["Rank", "Player", "Points"])
         tbl.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
@@ -166,17 +230,17 @@ class GraphWindow(QWidget):
         tbl.setStyleSheet("""
             QTableWidget {
                 font-size: 30px;
-                gridline-color: #444;
+                gridline-color: white;
                 border: none;
                 color: #111;
             }
             QHeaderView::section {
-                background-color: #1a1a2e;
+                background-color: #FF0000;
                 color: white;
                 font-size: 32px;
                 font-weight: bold;
                 padding: 10px;
-                border: 1px solid #333;
+                border: 1px solid white;
             }
         """)
 
@@ -205,7 +269,10 @@ class GraphWindow(QWidget):
                     item.setFont(normal_font)
                 tbl.setItem(i, col, item)
 
-        btn_style = "font-size: 40px; padding: 12px 40px; color: white; background-color: black;"
+        btn_style = (
+            "font-size: 40px; padding: 12px 40px; color: white;"
+            " background-color: black; border-radius: 10px;"
+        )
 
         rank_back_btn = QPushButton("◀")
         rank_back_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -223,16 +290,56 @@ class GraphWindow(QWidget):
         pause_btn.setStyleSheet(btn_style)
         self._rank_pause_btn = pause_btn
 
-        top_bar = QHBoxLayout()
-        top_bar.addStretch()
+        self._rank_fs_btn = QPushButton("⛶ Fullscreen")
+        self._rank_fs_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._rank_fs_btn.setStyleSheet(btn_style)
+        self._rank_fs_btn.clicked.connect(self._toggle_fullscreen)
+
+        top_bar_widget = QWidget()
+        top_bar_widget.setStyleSheet(
+            "background-color: #FF0000; border-radius: 16px 16px 0 0;"
+        )
+        header_lbl = QLabel("Pony Tarock Championship")
+        header_lbl.setStyleSheet(
+            "color: white; font-size: 36px; font-weight: bold;"
+            " background-color: transparent;"
+        )
+
+        top_bar = QHBoxLayout(top_bar_widget)
+        top_bar.setContentsMargins(24, 8, 12, 8)
+        top_bar.addWidget(header_lbl)
+        top_bar.addStretch(1)
         top_bar.addWidget(rank_back_btn)
         top_bar.addWidget(rank_fwd_btn)
         top_bar.addWidget(pause_btn)
+        top_bar.addWidget(self._rank_fs_btn)
 
         lay = QVBoxLayout(page)
-        lay.addLayout(top_bar)
-        lay.addWidget(title)
-        lay.addWidget(tbl)
+        lay.setContentsMargins(24, 24, 24, 24)
+        lay.setSpacing(0)
+        # Wrapper provides the rounded bottom corners:
+        # its dark background shows through the 16 px bottom margin and curved border.
+        table_frame = QWidget()
+        table_frame.setObjectName("tableFrame")
+        table_frame.setStyleSheet("""
+            QWidget#tableFrame {
+                background-color: #0d0d1a;
+                border: 2px solid #FF0000;
+                border-top: none;
+                border-radius: 0 0 16px 16px;
+            }
+        """)
+        frame_lay = QVBoxLayout(table_frame)
+        frame_lay.setContentsMargins(2, 0, 2, 16)
+        frame_lay.setSpacing(0)
+        frame_lay.addWidget(tbl)
+
+        # Clip the viewport (cell area) to rounded bottom corners so cells
+        # don't bleed into the corners of the frame.
+        _BottomRoundedMask(tbl.viewport(), 16)
+
+        lay.addWidget(top_bar_widget)
+        lay.addWidget(table_frame)
         return page
 
     # ------------------------------------------------------------------
@@ -284,6 +391,16 @@ class GraphWindow(QWidget):
     def _go_back(self) -> None:
         self._frame = (self._frame - 1) % self._total_frames
         self._show_frame()
+
+    def _toggle_fullscreen(self) -> None:
+        if self.isFullScreen():
+            self.showNormal()
+            self._graph_fs_btn.setText("⛶ Fullscreen")
+            self._rank_fs_btn.setText("⛶ Fullscreen")
+        else:
+            self.showFullScreen()
+            self._graph_fs_btn.setText("⛶ Windowed")
+            self._rank_fs_btn.setText("⛶ Windowed")
 
     def _toggle_pause(self) -> None:
         if self._timer.isActive():
