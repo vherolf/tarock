@@ -30,10 +30,14 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem,
     QHeaderView,
     QSizePolicy,
+    QGraphicsOpacityEffect,
+    QStyledItemDelegate,
 )
 from PyQt6.QtGui import QIntValidator, QKeySequence, QShortcut, QFont, QColor, QPainterPath, QRegion, QPainter
-from PyQt6.QtCore import Qt, QTimer, QRectF, QEvent, QObject
-from PyQt6.QtWidgets import QStyledItemDelegate
+from PyQt6.QtCore import (
+    Qt, QTimer, QRectF, QEvent, QObject,
+    QPropertyAnimation, QSequentialAnimationGroup, QEasingCurve,
+)
 
 try:
     from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
@@ -122,6 +126,33 @@ class _RoundedHeader(QHeaderView):
         painter.restore()
 
 
+class _TopRoundedMask(QObject):
+    """Keeps a widget's painted area clipped to a shape with rounded top corners."""
+    def __init__(self, widget: QWidget, radius: int) -> None:
+        super().__init__(widget)
+        self._radius = radius
+        widget.installEventFilter(self)
+        self._apply(widget)
+
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
+        if event.type() == QEvent.Type.Resize:
+            self._apply(obj)
+        return False
+
+    def _apply(self, widget: QWidget) -> None:
+        r = QRectF(widget.rect())
+        rad = float(self._radius)
+        path = QPainterPath()
+        path.moveTo(r.left(), r.bottom())
+        path.lineTo(r.left(), r.top() + rad)
+        path.arcTo(r.left(), r.top(), rad * 2, rad * 2, 180, -90)
+        path.lineTo(r.right() - rad, r.top())
+        path.arcTo(r.right() - rad * 2, r.top(), rad * 2, rad * 2, 90, -90)
+        path.lineTo(r.right(), r.bottom())
+        path.closeSubpath()
+        widget.setMask(QRegion(path.toFillPolygon().toPolygon(), Qt.FillRule.WindingFill))
+
+
 class _BottomRoundedMask(QObject):
     """Keeps a widget's painted area clipped to a shape with rounded bottom corners."""
     def __init__(self, widget: QWidget, radius: int) -> None:
@@ -151,6 +182,7 @@ class _BottomRoundedMask(QObject):
 
 class GraphWindow(QWidget):
     INTERVAL_MS_RANK  = 1_000
+    INTERVAL_MS_PAUSE = 10_000   # pause after all rows are revealed
     INTERVAL_MS_GRAPH = 10_000
 
     # frame 0     → Qt ranking table (proper emoji, fills screen)
@@ -172,8 +204,9 @@ class GraphWindow(QWidget):
 
         self._mapping = mapping
         self._rounds  = sorted({e["round"] for e in entries})
-        self._frame        = 0
-        self._rank_reveal  = 0   # how many ranking rows are currently visible
+        self._frame               = 0
+        self._rank_reveal         = 0   # how many ranking rows are currently visible
+        self._splash_resume_timer = False
 
         # Accumulate points per player per round
         per_round: dict[str, dict[int, int]] = {}
@@ -201,15 +234,16 @@ class GraphWindow(QWidget):
         self._total_frames = 1 + len(self._others) + 1  # +1 for all-players overview
 
         # ---- Pause button (shared across both pages) ----
-        self._pause_btn = QPushButton("Resume")
+        self._pause_btn = QPushButton("Auto")
         self._pause_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._pause_btn.clicked.connect(self._toggle_pause)
 
-        # ---- Page 0: Qt ranking table ----
+        # ---- Page 0: Splash ---- Page 1: Ranking ---- Page 2: Graph ----
         self._stack = QStackedWidget()
-        self._stack.addWidget(self._build_ranking_page())
+        self._stack.addWidget(self._build_splash_page())   # 0
+        self._stack.addWidget(self._build_ranking_page())  # 1
 
-        # ---- Page 1: matplotlib canvas ----
+        # ---- Page 2: matplotlib canvas ----
         graph_page = QWidget()
         graph_page.setStyleSheet("background-color: #0d0d1a;")
         self._fig = Figure(tight_layout=True, facecolor="black")
@@ -274,17 +308,18 @@ class GraphWindow(QWidget):
         glay.setSpacing(0)
         glay.addWidget(graph_top_bar, 0)
         glay.addWidget(canvas_wrapper, 1)
-        self._stack.addWidget(graph_page)
+        self._stack.addWidget(graph_page)  # 2
 
         main_layout = QVBoxLayout(self)
         main_layout.addWidget(self._stack)
 
-        self._stack.setCurrentIndex(0)
+        self._stack.setCurrentIndex(0)  # start on splash
 
-        QShortcut(QKeySequence(Qt.Key.Key_Left),  self).activated.connect(self._go_back)
-        QShortcut(QKeySequence(Qt.Key.Key_Right), self).activated.connect(self._go_forward)
-        QShortcut(QKeySequence(Qt.Key.Key_F11),   self).activated.connect(self._toggle_fullscreen)
-        QShortcut(QKeySequence(Qt.Key.Key_Space), self).activated.connect(self._toggle_pause)
+        QShortcut(QKeySequence(Qt.Key.Key_Left),   self).activated.connect(self._go_back)
+        QShortcut(QKeySequence(Qt.Key.Key_Right),  self).activated.connect(self._go_forward)
+        QShortcut(QKeySequence(Qt.Key.Key_F11),    self).activated.connect(self._toggle_fullscreen)
+        QShortcut(QKeySequence(Qt.Key.Key_Space),  self).activated.connect(self._toggle_pause)
+        QShortcut(QKeySequence(Qt.Key.Key_Escape), self).activated.connect(self._exit_fullscreen)
 
         self._timer = QTimer(self)
         self._timer.setInterval(self.INTERVAL_MS_RANK)
@@ -294,6 +329,143 @@ class GraphWindow(QWidget):
     # ------------------------------------------------------------------
     def _player_name(self, pnum: str) -> str:
         return self._mapping.get(int(pnum), pnum) if pnum.isdigit() else pnum
+
+    def _build_splash_page(self) -> QWidget:
+        page = QWidget()
+        page.setStyleSheet("background-color: #0d0d1a;")
+
+        btn_style = (
+            "font-size: 40px; padding: 12px 40px; color: #FF0000;"
+            " background-color: white; border-radius: 10px;"
+        )
+
+        back_btn = QPushButton("◀")
+        back_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        back_btn.setStyleSheet(btn_style)
+        back_btn.clicked.connect(self._go_back)
+
+        fwd_btn = QPushButton("▶")
+        fwd_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        fwd_btn.setStyleSheet(btn_style)
+        fwd_btn.clicked.connect(self._go_forward)
+
+        self._splash_pause_btn = QPushButton("Auto")
+        self._splash_pause_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._splash_pause_btn.setStyleSheet(btn_style)
+        self._splash_pause_btn.clicked.connect(self._toggle_pause)
+
+        self._splash_fs_btn = QPushButton("⛶ Fullscreen")
+        self._splash_fs_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._splash_fs_btn.setStyleSheet(btn_style)
+        self._splash_fs_btn.clicked.connect(self._toggle_fullscreen)
+
+        top_bar = QWidget()
+        top_bar.setStyleSheet("background-color: #FF0000; border-radius: 16px 16px 0 0;")
+        header_lbl = QLabel("Pony Tarock Championship")
+        header_lbl.setStyleSheet(
+            "color: white; font-size: 36px; font-weight: bold; background-color: transparent;"
+        )
+        top_bar_lay = QHBoxLayout(top_bar)
+        top_bar_lay.setContentsMargins(24, 8, 12, 8)
+        top_bar_lay.addWidget(header_lbl)
+        top_bar_lay.addStretch(1)
+        top_bar_lay.addWidget(back_btn)
+        top_bar_lay.addWidget(fwd_btn)
+        top_bar_lay.addWidget(self._splash_pause_btn)
+        top_bar_lay.addWidget(self._splash_fs_btn)
+        _TopRoundedMask(top_bar, 16)
+
+        content = QWidget()
+        content.setObjectName("splashContent")
+        content.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        content.setStyleSheet("QWidget#splashContent { background-color: #FF0000; }")
+
+        lbl = QLabel("Cafe Pony")
+        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl.setStyleSheet(
+            "color: white; font-size: 280px; font-weight: bold; background: transparent; border: none;"
+        )
+
+        content_lay = QVBoxLayout(content)
+        content_lay.addWidget(lbl)
+
+        _BottomRoundedMask(content, 16)
+
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(24, 24, 24, 24)
+        lay.setSpacing(0)
+        lay.addWidget(top_bar)
+        lay.addWidget(content, 1)
+
+        effect = QGraphicsOpacityEffect(lbl)
+        effect.setOpacity(0.0)
+        lbl.setGraphicsEffect(effect)
+
+        fade_in = QPropertyAnimation(effect, b"opacity", self)
+        fade_in.setDuration(3000)
+        fade_in.setStartValue(0.0)
+        fade_in.setEndValue(1.0)
+        fade_in.setEasingCurve(QEasingCurve.Type.InOutQuad)
+
+        fade_out = QPropertyAnimation(effect, b"opacity", self)
+        fade_out.setDuration(2000)
+        fade_out.setStartValue(1.0)
+        fade_out.setEndValue(0.0)
+        fade_out.setEasingCurve(QEasingCurve.Type.InOutQuad)
+
+        self._splash_anim = QSequentialAnimationGroup(self)
+        self._splash_anim.addAnimation(fade_in)
+        self._splash_anim.addPause(2000)
+        self._splash_anim.addAnimation(fade_out)
+        self._splash_anim.finished.connect(self._on_splash_done)
+        self._splash_anim.start()
+
+        return page
+
+    def _on_splash_done(self) -> None:
+        self._stack.setCurrentIndex(1)  # move to ranking page
+
+    def _skip_splash(self) -> bool:
+        """If the splash is currently visible, skip the animation and go to ranking.
+        Returns True if the splash was skipped (caller should re-enter navigation)."""
+        if self._stack.currentIndex() != 0:
+            return False
+        self._splash_anim.stop()
+        try:
+            self._splash_anim.finished.disconnect()
+        except Exception:
+            pass
+        self._splash_anim.finished.connect(self._on_splash_done)
+        self._stack.setCurrentIndex(1)
+        if self._splash_resume_timer:
+            self._splash_resume_timer = False
+            self._timer.start()
+        return True
+
+    def _show_splash_cycle(self) -> None:
+        """Show the splash interlude during the auto-cycle, then resume from ranking."""
+        self._stack.setCurrentIndex(0)
+        was_active = self._timer.isActive()
+        self._splash_resume_timer = was_active
+        self._timer.stop()
+
+        def on_cycle_done() -> None:
+            try:
+                self._splash_anim.finished.disconnect(on_cycle_done)
+            except Exception:
+                pass
+            self._splash_anim.finished.connect(self._on_splash_done)
+            self._stack.setCurrentIndex(1)  # ranking
+            if was_active:
+                self._timer.start()
+
+        try:
+            self._splash_anim.finished.disconnect()
+        except Exception:
+            pass
+        self._splash_anim.finished.connect(on_cycle_done)
+        self._splash_anim.stop()
+        self._splash_anim.start()
 
     def _build_ranking_page(self) -> QWidget:
         page = QWidget()
@@ -365,7 +537,7 @@ class GraphWindow(QWidget):
         rank_fwd_btn.setStyleSheet(btn_style)
         rank_fwd_btn.clicked.connect(self._go_forward)
 
-        pause_btn = QPushButton("Resume")
+        pause_btn = QPushButton("Auto")
         pause_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         pause_btn.clicked.connect(self._toggle_pause)
         pause_btn.setStyleSheet(btn_style)
@@ -510,12 +682,12 @@ class GraphWindow(QWidget):
 
     def _show_frame(self) -> None:
         if self._frame == 0:
-            self._stack.setCurrentIndex(0)
+            self._stack.setCurrentIndex(1)  # ranking
         elif self._frame == self._total_frames - 1:
-            self._stack.setCurrentIndex(1)
+            self._stack.setCurrentIndex(2)  # graph
             self._draw_all_players()
         else:
-            self._stack.setCurrentIndex(1)
+            self._stack.setCurrentIndex(2)  # graph
             self._draw_comparison(self._frame - 1)
 
     def _set_interval_for_current(self) -> None:
@@ -528,11 +700,18 @@ class GraphWindow(QWidget):
                 self._timer.start()
 
     def _go_forward(self) -> None:
+        if self._skip_splash():
+            return
         if self._frame == 0:
             if self._rank_reveal < len(self._ranked):
                 # Reveal the next row (entries shown from top, rank 1 first)
                 self._rank_tbl.setRowHidden(self._rank_reveal, False)
                 self._rank_reveal += 1
+                if self._rank_reveal == len(self._ranked) and self._timer.isActive():
+                    # All rows now visible — give readers 10 s before graphs start
+                    self._timer.stop()
+                    self._timer.setInterval(self.INTERVAL_MS_PAUSE)
+                    self._timer.start()
             else:
                 # All rows revealed — advance to first graph
                 self._frame = 1
@@ -541,17 +720,19 @@ class GraphWindow(QWidget):
         else:
             self._frame += 1
             if self._frame >= self._total_frames:
-                # Wrap back to ranking with nothing revealed
+                # Show splash, then wrap back to ranking with nothing revealed
                 self._frame = 0
                 self._rank_reveal = 0
                 for i in range(len(self._ranked)):
                     self._rank_tbl.setRowHidden(i, True)
                 self._set_interval_for_current()
-                self._stack.setCurrentIndex(0)
+                self._show_splash_cycle()
             else:
                 self._show_frame()
 
     def _go_back(self) -> None:
+        if self._skip_splash():
+            return
         if self._frame == 0:
             if self._rank_reveal > 0:
                 # Hide the last revealed row
@@ -575,25 +756,36 @@ class GraphWindow(QWidget):
     def _advance(self) -> None:
         self._go_forward()
 
+    def _exit_fullscreen(self) -> None:
+        if self.isFullScreen():
+            self.showNormal()
+            self._graph_fs_btn.setText("⛶ Fullscreen")
+            self._rank_fs_btn.setText("⛶ Fullscreen")
+            self._splash_fs_btn.setText("⛶ Fullscreen")
+
     def _toggle_fullscreen(self) -> None:
         if self.isFullScreen():
             self.showNormal()
             self._graph_fs_btn.setText("⛶ Fullscreen")
             self._rank_fs_btn.setText("⛶ Fullscreen")
+            self._splash_fs_btn.setText("⛶ Fullscreen")
         else:
             self.showFullScreen()
             self._graph_fs_btn.setText("⛶ Windowed")
             self._rank_fs_btn.setText("⛶ Windowed")
+            self._splash_fs_btn.setText("⛶ Windowed")
 
     def _toggle_pause(self) -> None:
         if self._timer.isActive():
             self._timer.stop()
-            self._pause_btn.setText("Resume")
-            self._rank_pause_btn.setText("Resume")
+            self._pause_btn.setText("Auto")
+            self._rank_pause_btn.setText("Auto")
+            self._splash_pause_btn.setText("Auto")
         else:
             self._timer.start()
             self._pause_btn.setText("Pause")
             self._rank_pause_btn.setText("Pause")
+            self._splash_pause_btn.setText("Pause")
 
     def closeEvent(self, event) -> None:
         self._timer.stop()
