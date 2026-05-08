@@ -637,8 +637,7 @@ class GraphWindow(QWidget):
         )
 
         self._ax.set_title(
-            f"[Winner] {winner_name}  vs  {other_name}"
-            f"  ({idx + 1} / {len(self._others)})",
+            f"[Winner] {winner_name}  vs  {other_name} [Rank {idx + 2}]",
             fontsize=self.FS_TITLE, color="white",
         )
         self._ax.set_xlabel("Round", fontsize=self.FS_LABEL, color="white")
