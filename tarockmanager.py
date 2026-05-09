@@ -756,8 +756,9 @@ class GraphWindow(QWidget):
             return
         if self._frame == 0:
             if self._rank_reveal < len(self._ranked):
-                # Reveal the next row (entries shown from top, rank 1 first)
-                self._rank_tbl.setRowHidden(self._rank_reveal, False)
+                # Reveal rows bottom-to-top (last place first, rank 1 last)
+                row = len(self._ranked) - 1 - self._rank_reveal
+                self._rank_tbl.setRowHidden(row, False)
                 self._rank_reveal += 1
                 if self._rank_reveal == len(self._ranked) and self._timer.isActive():
                     # All rows now visible — give readers 10 s before graphs start
@@ -789,9 +790,10 @@ class GraphWindow(QWidget):
             return
         if self._frame == 0:
             if self._rank_reveal > 0:
-                # Hide the last revealed row
+                # Hide the last revealed row (reverse of bottom-to-top order)
                 self._rank_reveal -= 1
-                self._rank_tbl.setRowHidden(self._rank_reveal, True)
+                row = len(self._ranked) - 1 - self._rank_reveal
+                self._rank_tbl.setRowHidden(row, True)
             else:
                 # At the very start — wrap to the last frame (all-players graph)
                 self._frame = self._total_frames - 1
