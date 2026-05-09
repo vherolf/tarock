@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import random
 import sys
 import csv
 from pathlib import Path
@@ -182,7 +183,7 @@ class _BottomRoundedMask(QObject):
 
 
 class GraphWindow(QWidget):
-    INTERVAL_MS_RANK  = 1_000
+    INTERVAL_MS_RANK  = 100
     INTERVAL_MS_PAUSE = 10_000   # pause after all rows are revealed
     INTERVAL_MS_GRAPH = 10_000
 
@@ -198,9 +199,16 @@ class GraphWindow(QWidget):
     FS_TICK   = 22
     FS_LEGEND = 24
 
-    def __init__(self, entries: list[dict], mapping: dict[int, str], speed: float = 1.0) -> None:
+    PLAYER_COLORS = [
+        "gold", "silver", "#CD7F32", "steelblue", "tomato", "limegreen",
+        "orchid", "cyan", "orange", "hotpink", "yellowgreen", "aquamarine",
+        "cornflowerblue", "salmon",
+    ]
+
+    def __init__(self, entries: list[dict], mapping: dict[int, str], title: str = "Pony Tarock Championship", speed: float = 1.0) -> None:
         super().__init__()
-        self.setWindowTitle("Tournament Results")
+        self._title = title
+        self.setWindowTitle(title)
         self.resize(960, 700)
 
         # Apply speed multiplier to all intervals (>1 = slower, <1 = faster)
@@ -235,86 +243,19 @@ class GraphWindow(QWidget):
             self._cumulative[pnum] = row
 
         self._ranked = sorted(players, key=lambda p: -self._cumulative[p][-1])
-        self._winner = self._ranked[0]
-        self._others = [p for p in self._ranked if p != self._winner]
-        self._total_frames = 1 + len(self._others) + 1  # +1 for all-players overview
+        self._total_frames = 2  # frame 0: ranking, frame 1: compare
 
-        # ---- Pause button (shared across both pages) ----
-        self._pause_btn = QPushButton("Auto")
-        self._pause_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._pause_btn.clicked.connect(self._toggle_pause)
+        self._player_colors: dict[str, str] = {
+            pnum: self.PLAYER_COLORS[i % len(self.PLAYER_COLORS)]
+            for i, pnum in enumerate(self._ranked)
+        }
+        self._compare_selected: set[str] = set()
 
-        # ---- Page 0: Splash ---- Page 1: Ranking ---- Page 2: Graph ----
+        # ---- Page 0: Splash ---- Page 1: Ranking ---- Page 2: Compare ----
         self._stack = QStackedWidget()
-        self._stack.addWidget(self._build_splash_page())   # 0
-        self._stack.addWidget(self._build_ranking_page())  # 1
-
-        # ---- Page 2: matplotlib canvas ----
-        graph_page = QWidget()
-        graph_page.setStyleSheet("background-color: #0d0d1a;")
-        self._fig = Figure(tight_layout=True, facecolor="black")
-        self._canvas = FigureCanvas(self._fig)
-        self._ax = self._fig.add_subplot(111)
-
-        btn_style = (
-            "font-size: 40px; padding: 12px 40px; color: #FF0000;"
-            " background-color: white; border-radius: 10px;"
-        )
-        back_btn = QPushButton("◀")
-        back_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        back_btn.setStyleSheet(btn_style)
-        back_btn.clicked.connect(self._user_back)
-
-        fwd_btn = QPushButton("▶")
-        fwd_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        fwd_btn.setStyleSheet(btn_style)
-        fwd_btn.clicked.connect(self._user_forward)
-
-        self._pause_btn.setStyleSheet(btn_style)
-
-        self._graph_fs_btn = QPushButton("⛶ Fullscreen")
-        self._graph_fs_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._graph_fs_btn.setStyleSheet(btn_style)
-        self._graph_fs_btn.clicked.connect(self._toggle_fullscreen)
-
-        graph_top_bar = QWidget()
-        graph_top_bar.setStyleSheet(
-            "background-color: #FF0000; border-radius: 16px 16px 0 0;"
-        )
-        graph_header_lbl = QLabel("Pony Tarock Championship")
-        graph_header_lbl.setStyleSheet(
-            "color: white; font-size: 36px; font-weight: bold;"
-            " background-color: transparent;"
-        )
-
-        graph_top_bar_layout = QHBoxLayout(graph_top_bar)
-        graph_top_bar_layout.setContentsMargins(24, 8, 12, 8)
-        graph_top_bar_layout.addWidget(graph_header_lbl)
-        graph_top_bar_layout.addStretch(1)
-        graph_top_bar_layout.addWidget(back_btn)
-        graph_top_bar_layout.addWidget(fwd_btn)
-        graph_top_bar_layout.addWidget(self._pause_btn)
-        graph_top_bar_layout.addWidget(self._graph_fs_btn)
-
-        self._canvas.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Expanding,
-        )
-
-        canvas_wrapper = QWidget()
-        canvas_wrapper.setStyleSheet(
-            "border: none;"
-        )
-        canvas_layout = QVBoxLayout(canvas_wrapper)
-        canvas_layout.setContentsMargins(0, 0, 0, 0)
-        canvas_layout.addWidget(self._canvas)
-
-        glay = QVBoxLayout(graph_page)
-        glay.setContentsMargins(24, 24, 24, 24)
-        glay.setSpacing(0)
-        glay.addWidget(graph_top_bar, 0)
-        glay.addWidget(canvas_wrapper, 1)
-        self._stack.addWidget(graph_page)  # 2
+        self._stack.addWidget(self._build_splash_page())        # 0
+        self._stack.addWidget(self._build_ranking_page())       # 1
+        self._stack.addWidget(self._build_compare_page())       # 2
 
         main_layout = QVBoxLayout(self)
         main_layout.addWidget(self._stack)
@@ -330,7 +271,12 @@ class GraphWindow(QWidget):
         self._timer = QTimer(self)
         self._timer.setInterval(self._ms_rank)
         self._timer.timeout.connect(self._advance)
-        # Start paused — press Space or Resume to begin auto-advance
+        # Start paused — press Space or Auto button to begin auto-advance
+
+        self._resume_timer = QTimer(self)
+        self._resume_timer.setSingleShot(True)
+        self._resume_timer.setInterval(60_000)
+        self._resume_timer.timeout.connect(self._resume_auto)
 
     # ------------------------------------------------------------------
     def _player_name(self, pnum: str) -> str:
@@ -360,14 +306,14 @@ class GraphWindow(QWidget):
         self._splash_pause_btn.setStyleSheet(btn_style)
         self._splash_pause_btn.clicked.connect(self._toggle_pause)
 
-        self._splash_fs_btn = QPushButton("⛶ Fullscreen")
-        self._splash_fs_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._splash_fs_btn.setStyleSheet(btn_style)
-        self._splash_fs_btn.clicked.connect(self._toggle_fullscreen)
+        splash_compare_btn = QPushButton("Compare")
+        splash_compare_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        splash_compare_btn.setStyleSheet(btn_style)
+        splash_compare_btn.clicked.connect(self._jump_to_compare)
 
         top_bar = QWidget()
         top_bar.setStyleSheet("background-color: #FF0000; border-radius: 16px 16px 0 0;")
-        header_lbl = QLabel("Pony Tarock Championship")
+        header_lbl = QLabel(self._title)
         header_lbl.setStyleSheet(
             "color: white; font-size: 36px; font-weight: bold; background-color: transparent;"
         )
@@ -378,7 +324,7 @@ class GraphWindow(QWidget):
         top_bar_lay.addWidget(back_btn)
         top_bar_lay.addWidget(fwd_btn)
         top_bar_lay.addWidget(self._splash_pause_btn)
-        top_bar_lay.addWidget(self._splash_fs_btn)
+        top_bar_lay.addWidget(splash_compare_btn)
         _TopRoundedMask(top_bar, 16)
 
         content = QWidget()
@@ -549,16 +495,16 @@ class GraphWindow(QWidget):
         pause_btn.setStyleSheet(btn_style)
         self._rank_pause_btn = pause_btn
 
-        self._rank_fs_btn = QPushButton("⛶ Fullscreen")
-        self._rank_fs_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._rank_fs_btn.setStyleSheet(btn_style)
-        self._rank_fs_btn.clicked.connect(self._toggle_fullscreen)
+        rank_compare_btn = QPushButton("Compare")
+        rank_compare_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        rank_compare_btn.setStyleSheet(btn_style)
+        rank_compare_btn.clicked.connect(self._jump_to_compare)
 
         top_bar_widget = QWidget()
         top_bar_widget.setStyleSheet(
             "background-color: #FF0000; border-radius: 16px 16px 0 0;"
         )
-        header_lbl = QLabel("Pony Tarock Championship")
+        header_lbl = QLabel(self._title)
         header_lbl.setStyleSheet(
             "color: white; font-size: 36px; font-weight: bold;"
             " background-color: transparent;"
@@ -571,7 +517,7 @@ class GraphWindow(QWidget):
         top_bar.addWidget(rank_back_btn)
         top_bar.addWidget(rank_fwd_btn)
         top_bar.addWidget(pause_btn)
-        top_bar.addWidget(self._rank_fs_btn)
+        top_bar.addWidget(rank_compare_btn)
 
         lay = QVBoxLayout(page)
         lay.setContentsMargins(24, 24, 24, 24)
@@ -602,98 +548,174 @@ class GraphWindow(QWidget):
         return page
 
     # ------------------------------------------------------------------
-    def _draw_comparison(self, idx: int) -> None:
-        self._ax.clear()
-        self._ax.set_facecolor("black")
-        xs = self._rounds
+    def _build_compare_page(self) -> QWidget:
+        page = QWidget()
+        page.setStyleSheet("background-color: #0d0d1a;")
 
-        winner_name = self._player_name(self._winner)
-        winner_ys   = self._cumulative[self._winner]
-        other       = self._others[idx]
-        other_name  = self._player_name(other)
-        other_ys    = self._cumulative[other]
-
-        self._ax.plot(xs, other_ys, marker="o", color="steelblue",
-                      linewidth=5, markersize=14, label=other_name)
-        self._ax.fill_between(xs, winner_ys, other_ys, alpha=0.12, color="steelblue")
-        self._ax.plot(xs, winner_ys, marker="o", color="gold",
-                      linewidth=6, markersize=16, label=f"{winner_name} [Winner]")
-
-        # Annotate final points for both players
-        last_x = xs[-1]
-        self._ax.annotate(
-            f"{other_name}  {other_ys[-1]}",
-            xy=(last_x, other_ys[-1]),
-            xytext=(8, 0), textcoords="offset points",
-            va="center", ha="left",
-            fontsize=self.FS_LABEL, color="steelblue", fontweight="bold",
-        )
-        self._ax.annotate(
-            f"{winner_name}  {winner_ys[-1]}",
-            xy=(last_x, winner_ys[-1]),
-            xytext=(8, 0), textcoords="offset points",
-            va="center", ha="left",
-            fontsize=self.FS_LABEL, color="gold", fontweight="bold",
+        btn_style = (
+            "font-size: 40px; padding: 12px 40px; color: #FF0000;"
+            " background-color: white; border-radius: 10px;"
         )
 
-        self._ax.set_title(
-            f"[Winner] {winner_name}  vs  {other_name} [Rank {idx + 2}]",
-            fontsize=self.FS_TITLE, color="white",
-        )
-        self._ax.set_xlabel("Round", fontsize=self.FS_LABEL, color="white")
-        self._ax.set_ylabel("Cumulative Points", fontsize=self.FS_LABEL, color="white")
-        self._ax.legend(loc="upper left", fontsize=self.FS_LEGEND)
-        self._ax.grid(True, linestyle="--", alpha=0.5, color="white")
-        self._ax.set_xticks(xs)
-        self._ax.tick_params(axis="both", labelsize=self.FS_TICK, colors="white")
-        for spine in self._ax.spines.values():
-            spine.set_visible(False)
-        self._canvas.draw()
+        back_btn = QPushButton("◀")
+        back_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        back_btn.setStyleSheet(btn_style)
+        back_btn.clicked.connect(self._user_back)
 
-    # ------------------------------------------------------------------
-    def _draw_all_players(self) -> None:
-        self._ax.clear()
-        self._ax.set_facecolor("black")
-        xs = self._rounds
-        colors = [
-            "gold", "silver", "#CD7F32", "steelblue", "tomato", "limegreen",
-            "orchid", "cyan", "orange", "hotpink", "yellowgreen", "aquamarine",
-            "cornflowerblue", "salmon",
-        ]
-        for i, pnum in enumerate(self._ranked):
+        fwd_btn = QPushButton("▶")
+        fwd_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        fwd_btn.setStyleSheet(btn_style)
+        fwd_btn.clicked.connect(self._user_forward)
+
+        self._compare_pause_btn = QPushButton("Auto")
+        self._compare_pause_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._compare_pause_btn.setStyleSheet(btn_style)
+        self._compare_pause_btn.clicked.connect(self._toggle_pause)
+
+        compare_nav_btn = QPushButton("Compare")
+        compare_nav_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        compare_nav_btn.setStyleSheet(btn_style)
+        compare_nav_btn.clicked.connect(self._jump_to_compare)
+
+        top_bar = QWidget()
+        top_bar.setStyleSheet("background-color: #FF0000; border-radius: 16px 16px 0 0;")
+        header_lbl = QLabel(self._title)
+        header_lbl.setStyleSheet(
+            "color: white; font-size: 36px; font-weight: bold; background-color: transparent;"
+        )
+        top_bar_lay = QHBoxLayout(top_bar)
+        top_bar_lay.setContentsMargins(24, 8, 12, 8)
+        top_bar_lay.addWidget(header_lbl)
+        top_bar_lay.addStretch(1)
+        top_bar_lay.addWidget(back_btn)
+        top_bar_lay.addWidget(fwd_btn)
+        top_bar_lay.addWidget(self._compare_pause_btn)
+        top_bar_lay.addWidget(compare_nav_btn)
+
+        # --- Left sidebar: one toggle button per player ---
+        player_panel = QWidget()
+        player_panel.setStyleSheet("background-color: #0d0d1a;")
+        player_layout = QVBoxLayout(player_panel)
+        player_layout.setContentsMargins(8, 8, 8, 8)
+        player_layout.setSpacing(6)
+
+        self._compare_btns: dict[str, QPushButton] = {}
+        for rank, pnum in enumerate(self._ranked, start=1):
             name = self._player_name(pnum)
-            ys   = self._cumulative[pnum]
-            color = colors[i % len(colors)]
-            self._ax.plot(xs, ys, marker="o", linewidth=4, markersize=10,
-                          color=color, label=name)
-            self._ax.annotate(
+            color = self._player_colors[pnum]
+            btn = QPushButton(f"{rank}. {name}")
+            btn.setCheckable(True)
+            btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    font-size: 18px;
+                    padding: 10px 14px;
+                    color: {color};
+                    background-color: #1a1a2e;
+                    border: 2px solid {color};
+                    border-radius: 8px;
+                    text-align: left;
+                }}
+                QPushButton:checked {{
+                    background-color: {color};
+                    color: black;
+                    font-weight: bold;
+                }}
+            """)
+            btn.clicked.connect(lambda _checked, p=pnum: self._toggle_compare_player(p))
+            self._compare_btns[pnum] = btn
+            player_layout.addWidget(btn)
+
+        player_layout.addStretch(1)
+
+        scroll = QScrollArea()
+        scroll.setWidget(player_panel)
+        scroll.setWidgetResizable(True)
+        scroll.setFixedWidth(230)
+        scroll.setStyleSheet("background-color: #0d0d1a; border: none;")
+
+        # --- Right: dedicated matplotlib canvas ---
+        self._compare_fig = Figure(tight_layout=True, facecolor="black")
+        self._compare_canvas = FigureCanvas(self._compare_fig)
+        self._compare_ax = self._compare_fig.add_subplot(111)
+        self._compare_canvas.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
+
+        body = QWidget()
+        body_lay = QHBoxLayout(body)
+        body_lay.setContentsMargins(0, 8, 0, 0)
+        body_lay.setSpacing(8)
+        body_lay.addWidget(scroll, 0)
+        body_lay.addWidget(self._compare_canvas, 1)
+
+        page_lay = QVBoxLayout(page)
+        page_lay.setContentsMargins(24, 24, 24, 24)
+        page_lay.setSpacing(0)
+        page_lay.addWidget(top_bar, 0)
+        page_lay.addWidget(body, 1)
+
+        return page
+
+    def _auto_select_compare_players(self, count: int) -> None:
+        selected = random.sample(self._ranked, min(count, len(self._ranked)))
+        self._compare_selected = set(selected)
+        for pnum, btn in self._compare_btns.items():
+            btn.setChecked(pnum in self._compare_selected)
+
+    def _toggle_compare_player(self, pnum: str) -> None:
+        self._pause()
+        self._resume_timer.stop()
+        if pnum in self._compare_selected:
+            self._compare_selected.discard(pnum)
+        else:
+            self._compare_selected.add(pnum)
+        self._redraw_compare()
+
+    def _redraw_compare(self) -> None:
+        ax = self._compare_ax
+        ax.clear()
+        ax.set_facecolor("black")
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+        ax.tick_params(axis="both", labelsize=self.FS_TICK, colors="white")
+
+        if not self._compare_selected:
+            ax.set_title("Select a player to compare", fontsize=self.FS_TITLE, color="white")
+            self._compare_canvas.draw()
+            return
+
+        xs = self._rounds
+        for pnum in self._ranked:
+            if pnum not in self._compare_selected:
+                continue
+            name = self._player_name(pnum)
+            ys = self._cumulative[pnum]
+            color = self._player_colors[pnum]
+            ax.plot(xs, ys, marker="o", linewidth=4, markersize=10, color=color, label=name)
+            ax.annotate(
                 f"{name}  {ys[-1]}",
                 xy=(xs[-1], ys[-1]),
                 xytext=(8, 0), textcoords="offset points",
                 va="center", ha="left",
                 fontsize=self.FS_TICK, color=color, fontweight="bold",
             )
-        self._ax.set_title("All Players — Final Standings", fontsize=self.FS_TITLE, color="white")
-        self._ax.set_xlabel("Round", fontsize=self.FS_LABEL, color="white")
-        self._ax.set_ylabel("Cumulative Points", fontsize=self.FS_LABEL, color="white")
-        self._ax.legend(loc="upper left", fontsize=self.FS_LEGEND - 4,
-                        ncol=2, framealpha=0.4)
-        self._ax.grid(True, linestyle="--", alpha=0.5, color="white")
-        self._ax.set_xticks(xs)
-        self._ax.tick_params(axis="both", labelsize=self.FS_TICK, colors="white")
-        for spine in self._ax.spines.values():
-            spine.set_visible(False)
-        self._canvas.draw()
+
+        ax.set_title("Player Comparison", fontsize=self.FS_TITLE, color="white")
+        ax.set_xlabel("Round", fontsize=self.FS_LABEL, color="white")
+        ax.set_ylabel("Cumulative Points", fontsize=self.FS_LABEL, color="white")
+        ax.legend(loc="upper left", fontsize=self.FS_LEGEND)
+        ax.grid(True, linestyle="--", alpha=0.5, color="white")
+        ax.set_xticks(xs)
+        self._compare_canvas.draw()
 
     def _show_frame(self) -> None:
         if self._frame == 0:
             self._stack.setCurrentIndex(1)  # ranking
-        elif self._frame == self._total_frames - 1:
-            self._stack.setCurrentIndex(2)  # graph
-            self._draw_all_players()
         else:
-            self._stack.setCurrentIndex(2)  # graph
-            self._draw_comparison(self._frame - 1)
+            self._stack.setCurrentIndex(2)  # compare slide
+            self._redraw_compare()
 
     def _set_interval_for_current(self) -> None:
         interval = self._ms_rank if self._frame == 0 else self._ms_graph
@@ -712,6 +734,23 @@ class GraphWindow(QWidget):
         self._pause()
         self._go_back()
 
+    def _jump_to_compare(self) -> None:
+        self._timer.stop()
+        self._resume_timer.stop()
+        self._rank_pause_btn.setText("Auto")
+        self._splash_pause_btn.setText("Auto")
+        self._compare_pause_btn.setText("Auto")
+        if self._stack.currentIndex() == 0:
+            self._splash_anim.stop()
+            try:
+                self._splash_anim.finished.disconnect()
+            except Exception:
+                pass
+            self._splash_anim.finished.connect(self._on_splash_done)
+            self._splash_resume_timer = False
+        self._frame = self._total_frames - 1
+        self._show_frame()
+
     def _go_forward(self) -> None:
         if self._skip_splash():
             return
@@ -728,6 +767,8 @@ class GraphWindow(QWidget):
             else:
                 # All rows revealed — advance to first graph
                 self._frame = 1
+                if self._timer.isActive():
+                    self._auto_select_compare_players(2)
                 self._set_interval_for_current()
                 self._show_frame()
         else:
@@ -769,9 +810,10 @@ class GraphWindow(QWidget):
     def _pause(self) -> None:
         if self._timer.isActive():
             self._timer.stop()
-            self._pause_btn.setText("Auto")
             self._rank_pause_btn.setText("Auto")
             self._splash_pause_btn.setText("Auto")
+            self._compare_pause_btn.setText("Auto")
+            self._resume_timer.start()
 
     def _advance(self) -> None:
         self._go_forward()
@@ -779,46 +821,49 @@ class GraphWindow(QWidget):
     def _exit_fullscreen(self) -> None:
         if self.isFullScreen():
             self.showNormal()
-            self._graph_fs_btn.setText("⛶ Fullscreen")
-            self._rank_fs_btn.setText("⛶ Fullscreen")
-            self._splash_fs_btn.setText("⛶ Fullscreen")
 
     def _toggle_fullscreen(self) -> None:
         if self.isFullScreen():
             self.showNormal()
-            self._graph_fs_btn.setText("⛶ Fullscreen")
-            self._rank_fs_btn.setText("⛶ Fullscreen")
-            self._splash_fs_btn.setText("⛶ Fullscreen")
         else:
             self.showFullScreen()
-            self._graph_fs_btn.setText("⛶ Windowed")
-            self._rank_fs_btn.setText("⛶ Windowed")
-            self._splash_fs_btn.setText("⛶ Windowed")
 
     def _toggle_pause(self) -> None:
         if self._timer.isActive():
             self._timer.stop()
-            self._pause_btn.setText("Auto")
             self._rank_pause_btn.setText("Auto")
             self._splash_pause_btn.setText("Auto")
+            self._compare_pause_btn.setText("Auto")
+            self._resume_timer.start()
         else:
+            self._resume_timer.stop()
             self._timer.start()
-            self._pause_btn.setText("Pause")
             self._rank_pause_btn.setText("Pause")
             self._splash_pause_btn.setText("Pause")
+            self._compare_pause_btn.setText("Pause")
+
+    def _resume_auto(self) -> None:
+        if not self._timer.isActive():
+            self._timer.start()
+            self._rank_pause_btn.setText("Pause")
+            self._splash_pause_btn.setText("Pause")
+            self._compare_pause_btn.setText("Pause")
 
     def closeEvent(self, event) -> None:
         self._timer.stop()
+        self._resume_timer.stop()
         super().closeEvent(event)
 
 
 class MainWindow(QWidget):
-    CSV_FILE = Path("result.csv")
-    MAP_FILE = Path("player_numbers.csv")
-
-    def __init__(self, speed: float = 1.0) -> None:
+    def __init__(self, tournament_dir: Path, speed: float = 1.0) -> None:
         super().__init__()
-        self.setWindowTitle("Tarock Tournament Manager")
+        self.CSV_FILE      = tournament_dir / "result.csv"
+        self.MAP_FILE      = tournament_dir / "player_numbers.csv"
+        self._ranking_file = tournament_dir / "ranking.csv"
+        num = int(tournament_dir.name) if tournament_dir.name.isdigit() else 0
+        self._tournament_title = f"{_ordinal(num)} Pony Tarock Championship"
+        self.setWindowTitle(f"Tarock Tournament Manager — {tournament_dir.name}")
         self._speed = speed
 
         font = QFont()
@@ -840,9 +885,21 @@ class MainWindow(QWidget):
 
     # ------------------------------------------------------------------
     def _build_ui(self) -> None:
-        outer_layout = QHBoxLayout()
-        outer_layout.addWidget(self._build_left_panel())
-        outer_layout.addWidget(self._build_right_panel())
+        header = QLabel(self._tournament_title)
+        header.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        header.setStyleSheet(
+            "font-size: 28px; font-weight: bold; color: white;"
+            " background-color: #CC0000; padding: 10px; border-radius: 8px;"
+        )
+
+        panels = QHBoxLayout()
+        panels.addWidget(self._build_left_panel())
+        panels.addWidget(self._build_right_panel())
+
+        outer_layout = QVBoxLayout()
+        outer_layout.setSpacing(8)
+        outer_layout.addWidget(header)
+        outer_layout.addLayout(panels)
         self.setLayout(outer_layout)
 
     def _build_left_panel(self) -> QWidget:
@@ -859,10 +916,12 @@ class MainWindow(QWidget):
             num_le = QLineEdit()
             num_le.setPlaceholderText(f"Player № {row + 1}")
             num_le.setValidator(QIntValidator(0, 9999))
+            num_le.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
             left_grid.addWidget(num_le, row, 0)
 
             name_le = QLineEdit()
             name_le.setPlaceholderText(f"Name {row + 1}")
+            name_le.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
             left_grid.addWidget(name_le, row, 1)
 
             self.mapping_edits.append((num_le, name_le))
@@ -1091,6 +1150,13 @@ class MainWindow(QWidget):
         entry = self._build_entry()
         if entry is None:
             return
+        for existing in self.entries:
+            if existing["table"] == entry["table"] and existing["round"] == entry["round"]:
+                self._set_status(
+                    f"Table {entry['table']} already submitted for round {entry['round']} — use Change to update it.",
+                    error=True,
+                )
+                return
         self.entries.append(entry)
         self.current_index = len(self.entries) - 1
         self._populate_form(entry)
@@ -1252,7 +1318,7 @@ class MainWindow(QWidget):
         if not self.entries:
             self._set_status("No entries to graph.", error=True)
             return
-        self._graph_window = GraphWindow(self.entries, self.mapping, speed=self._speed)
+        self._graph_window = GraphWindow(self.entries, self.mapping, title=self._tournament_title, speed=self._speed)
         self._graph_window.show()
 
     # ------------------------------------------------------------------
@@ -1284,27 +1350,54 @@ class MainWindow(QWidget):
         print(ranking_csv, flush=True)
 
         try:
-            with open("ranking.csv", "w", encoding="utf-8") as f:
+            with open(self._ranking_file, "w", encoding="utf-8") as f:
                 f.write(ranking_csv)
         except OSError as exc:
-            self._set_status(f"Could not write ranking.csv: {exc}", error=True)
+            self._set_status(f"Could not write {self._ranking_file}: {exc}", error=True)
             return
 
         self.output_display.setPlainText("\n".join(display_lines))
-        self._set_status("Ranking generated – also saved to ranking.csv.")
+        self._set_status(f"Ranking generated – also saved to {self._ranking_file}.")
 
 
 # ----------------------------------------------------------------------
+def _ordinal(n: int) -> str:
+    suffix = "th" if 11 <= (n % 100) <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
+
+
+def _resolve_tournament_dir(num: int | None) -> Path:
+    base = Path("tournaments")
+    base.mkdir(exist_ok=True)
+    if num is not None:
+        d = base / str(num)
+        d.mkdir(exist_ok=True)
+        return d
+    candidates = [
+        int(p.name) for p in base.iterdir()
+        if p.is_dir() and p.name.isdigit()
+    ]
+    d = base / str(max(candidates)) if candidates else base / "1"
+    d.mkdir(exist_ok=True)
+    return d
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Tarock Tournament Manager")
     parser.add_argument(
         "--speed", type=float, default=1.0, metavar="MULTIPLIER",
         help="Timer speed multiplier (0.5 = twice as fast, 2.0 = twice as slow, default 1.0)",
     )
+    parser.add_argument(
+        "--tournament", type=int, default=None, metavar="N",
+        help="Tournament number to open (e.g. 23). Opens the latest if omitted.",
+    )
     args, qt_args = parser.parse_known_args()
 
+    tournament_dir = _resolve_tournament_dir(args.tournament)
+
     app = QApplication([sys.argv[0]] + qt_args)
-    win = MainWindow(speed=args.speed)
+    win = MainWindow(tournament_dir=tournament_dir, speed=args.speed)
     win.resize(1000, 600)
     win.show()
     sys.exit(app.exec())
