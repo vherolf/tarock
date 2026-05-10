@@ -447,6 +447,7 @@ class GraphWindow(QWidget):
         bold_font.setBold(True)
         bold_font.setPointSize(22)
         normal_font = QFont()
+        normal_font.setBold(True)
         normal_font.setPointSize(22)
 
         for i, pnum in enumerate(self._ranked):
@@ -546,6 +547,28 @@ class GraphWindow(QWidget):
         lay.addWidget(top_bar_widget)
         lay.addWidget(table_frame)
         return page
+
+    def _update_rank_font_size(self) -> None:
+        if not hasattr(self, "_rank_tbl"):
+            return
+        tbl = self._rank_tbl
+        n = tbl.rowCount()
+        if n == 0:
+            return
+        row_px = max(1, tbl.viewport().height() // n)
+        pt = max(8, int(row_px * 0.6))
+        font = QFont()
+        font.setBold(True)
+        font.setPointSize(pt)
+        for i in range(n):
+            for col in range(tbl.columnCount()):
+                item = tbl.item(i, col)
+                if item:
+                    item.setFont(font)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._update_rank_font_size()
 
     # ------------------------------------------------------------------
     def _build_compare_page(self) -> QWidget:
@@ -702,7 +725,7 @@ class GraphWindow(QWidget):
                 fontsize=self.FS_TICK, color=color, fontweight="bold",
             )
 
-        ax.set_title("Player Comparison", fontsize=self.FS_TITLE, color="white")
+        ax.set_title("Pizinieren", fontsize=self.FS_TITLE, color="white")
         ax.set_xlabel("Round", fontsize=self.FS_LABEL, color="white")
         ax.set_ylabel("Cumulative Points", fontsize=self.FS_LABEL, color="white")
         ax.legend(loc="upper left", fontsize=self.FS_LEGEND)
@@ -713,6 +736,7 @@ class GraphWindow(QWidget):
     def _show_frame(self) -> None:
         if self._frame == 0:
             self._stack.setCurrentIndex(1)  # ranking
+            self._update_rank_font_size()
         else:
             self._stack.setCurrentIndex(2)  # compare slide
             self._redraw_compare()
