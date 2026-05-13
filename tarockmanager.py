@@ -134,9 +134,9 @@ class _RoundedHeader(QHeaderView):
         text = self.model().headerData(
             logical_index, Qt.Orientation.Horizontal, Qt.ItemDataRole.DisplayRole
         )
-        font = QFont()
+        font = QFont("Noto Serif")
         font.setBold(True)
-        font.setPointSize(22)
+        font.setPointSize(30)
         if logical_index == 0:
             align = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         elif logical_index == 2:
@@ -208,7 +208,8 @@ class GraphWindow(QWidget):
     AUTO_RANKING_MS = 5_000
     AUTO_COMPARE_MS = 10_000
 
-    _MEDAL  = {0: "👑", 1: "🥈", 2: "🥉"}
+    _MEDAL      = {0: "👑", 1: "🥈", 2: "🥉", 4: "🍈"}
+    _LAST_MEDAL = "🌭"
     _ROW_BG = {0: QColor("#FFD700"), 1: QColor("#C0C0C0"), 2: QColor("#CD7F32")}
     _ROW_ALT = (QColor("#F2F2F2"), QColor("#E2E2E2"))
 
@@ -421,7 +422,7 @@ class GraphWindow(QWidget):
         content.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         content.setStyleSheet("QWidget#splashContent { background-color: #FF0000; }")
 
-        lbl = QLabel("Cafe Pony")
+        lbl = QLabel("Café Pony")
         lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lbl.setStyleSheet(
             "color: white; font-size: 280px; font-weight: bold; background: transparent; border: none;"
@@ -479,12 +480,16 @@ class GraphWindow(QWidget):
         """)
         tbl.setItemDelegate(_RoundedRowDelegate(tbl))
 
-        item_font = QFont()
+        item_font = QFont("Noto Serif")
         item_font.setBold(True)
-        item_font.setPointSize(22)
+        item_font.setPointSize(30)
 
+        last_idx = len(self._ranked) - 1
         for i, pnum in enumerate(self._ranked):
-            medal    = self._MEDAL.get(i, "")
+            if i == last_idx:
+                medal = self._LAST_MEDAL
+            else:
+                medal = self._MEDAL.get(i, "")
             rank_str = f"{medal}  {i + 1}." if medal else f"    {i + 1}."
             name     = self._player_name(pnum)
             total    = str(self._cumulative[pnum][-1])
@@ -583,8 +588,8 @@ class GraphWindow(QWidget):
         if n == 0:
             return
         row_px = max(1, tbl.viewport().height() // n)
-        pt = max(8, int(row_px * 0.6))
-        font = QFont()
+        pt = max(14, int(row_px * 0.75))
+        font = QFont("Noto Serif")
         font.setBold(True)
         font.setPointSize(pt)
         for i in range(n):
@@ -952,7 +957,7 @@ class MainWindow(QWidget):
         self._tournament_title = f"{_ordinal(num)} Pony Tarock Championship"
         self.setWindowTitle(f"Tarock Tournament Manager — {tournament_dir.name}")
 
-        font = QFont()
+        font = QFont("Noto Serif")
         font.setPointSize(18)
         self.setFont(font)
 
@@ -1489,6 +1494,7 @@ def main() -> None:
     tournament_dir = _resolve_tournament_dir(args.tournament)
 
     app = QApplication([sys.argv[0]] + qt_args)
+    app.setFont(QFont("Noto Serif"))
     win = MainWindow(tournament_dir=tournament_dir, auto_speed=args.auto_speed, auto_resume_s=args.auto_resume_s)
     win.resize(1000, 600)
     win.show()
