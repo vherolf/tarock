@@ -1217,6 +1217,17 @@ class MainWindow(QWidget):
             self._set_status("All four player number fields must be filled.", error=True)
             return None
 
+        if len(set(player_numbers)) != 4:
+            self._set_status("All four player numbers must be unique.", error=True)
+            return None
+
+        points_total = sum(sb.value() for sb in self.points_spins)
+        if points_total != 0:
+            self._set_status(
+                f"Points must sum to 0 (current sum: {points_total:+d}).", error=True
+            )
+            return None
+
         return {
             "table": int(table_text),
             "round": self.round_spin.value(),
