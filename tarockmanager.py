@@ -311,7 +311,7 @@ class GraphWindow(QWidget):
     def _make_auto_btn_widget(self) -> tuple[QWidget, QPushButton]:
         """Return (container, button) — container includes the auto button and a hidden autoresume label."""
         btn_style = (
-            "font-size: 40px; padding: 12px 40px; color: #FF0000;"
+            "font-size: 36px; padding: 12px 40px; color: #FF0000;"
             " background-color: white; border-radius: 10px;"
         )
         btn = QPushButton("Auto")
@@ -377,7 +377,7 @@ class GraphWindow(QWidget):
         page.setStyleSheet("background-color: #0d0d1a;")
 
         btn_style = (
-            "font-size: 40px; padding: 12px 40px; color: #FF0000;"
+            "font-size: 36px; padding: 12px 40px; color: #FF0000;"
             " background-color: white; border-radius: 10px;"
         )
 
@@ -510,7 +510,7 @@ class GraphWindow(QWidget):
         self._rank_tbl = tbl
 
         btn_style = (
-            "font-size: 40px; padding: 12px 40px; color: #FF0000;"
+            "font-size: 36px; padding: 12px 40px; color: #FF0000;"
             " background-color: white; border-radius: 10px;"
         )
 
@@ -608,7 +608,7 @@ class GraphWindow(QWidget):
         page.setStyleSheet("background-color: #0d0d1a;")
 
         btn_style = (
-            "font-size: 40px; padding: 12px 40px; color: #FF0000;"
+            "font-size: 36px; padding: 12px 40px; color: #FF0000;"
             " background-color: white; border-radius: 10px;"
         )
 
