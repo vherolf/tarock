@@ -12,6 +12,7 @@ import io
 import random
 import sys
 import csv
+import qrcode
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
@@ -35,7 +36,7 @@ from PyQt6.QtWidgets import (
     QGraphicsOpacityEffect,
     QStyledItemDelegate,
 )
-from PyQt6.QtGui import QIntValidator, QKeySequence, QShortcut, QFont, QColor, QPainterPath, QRegion, QPainter
+from PyQt6.QtGui import QIntValidator, QKeySequence, QShortcut, QFont, QColor, QPainterPath, QRegion, QPainter, QPixmap, QImage
 from PyQt6.QtCore import (
     Qt, QTimer, QRectF, QEvent, QObject,
     QPropertyAnimation, QSequentialAnimationGroup, QEasingCurve,
@@ -203,6 +204,76 @@ class _BottomRoundedMask(QObject):
         widget.setMask(QRegion(path.toFillPolygon().toPolygon(), Qt.FillRule.WindingFill))
 
 
+class _PixelTrickleOverlay(QWidget):
+    """White block overlay for pixel transitions.
+    pixel-out: content fully visible → random white blocks cover it.
+    """
+    _BLOCK = 20
+    _INTERVAL_MS = 25
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self._on_done = None
+        self._pending: list[tuple[int, int]] = []
+        self._masked: set[tuple[int, int]] = set()
+        self._per_tick = 1
+        self._pixelout = True
+        self._timer = QTimer(self)
+        self._timer.setInterval(self._INTERVAL_MS)
+        self._timer.timeout.connect(self._tick)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.hide()
+
+    def _build_blocks(self) -> list[tuple[int, int]]:
+        cols = max(1, (self.width()  + self._BLOCK - 1) // self._BLOCK)
+        rows = max(1, (self.height() + self._BLOCK - 1) // self._BLOCK)
+        blocks = [(c, r) for c in range(cols) for r in range(rows)]
+        random.shuffle(blocks)
+        return blocks
+
+    def start_pixelout(self, on_done) -> None:
+        """Content visible → random white blocks fill in until all covered."""
+        self._on_done = on_done
+        self._pixelout = True
+        self.resize(self.parent().size())
+        self.raise_()
+        self._pending = self._build_blocks()
+        self._masked = set()
+        self._per_tick = max(1, len(self._pending) // 40)
+        self.setMask(QRegion())
+        self.show()
+        self._timer.start()
+
+    def stop(self) -> None:
+        self._timer.stop()
+        self.clearMask()
+        self.hide()
+
+    def _apply_mask(self) -> None:
+        region = QRegion()
+        for col, row in self._masked:
+            region = region.united(
+                QRegion(col * self._BLOCK, row * self._BLOCK, self._BLOCK, self._BLOCK)
+            )
+        self.setMask(region)
+        self.update()
+
+    def _tick(self) -> None:
+        for _ in range(self._per_tick):
+            if self._pending:
+                self._masked.add(self._pending.pop())
+        self._apply_mask()
+        if not self._pending:
+            self._timer.stop()
+            if self._on_done:
+                self._on_done()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor("white"))
+        painter.end()
+
+
 class GraphWindow(QWidget):
     # frame 0 → ranking table   frame 1 → compare graph
     AUTO_RANKING_MS = 5_000
@@ -238,6 +309,7 @@ class GraphWindow(QWidget):
         self._logo_hold_ms     = _ms(2_000)
         self._logo_fade_out_ms = _ms(1_000)
         self._compare_ms       = _ms(self.AUTO_COMPARE_MS)
+        self._walter_hold_ms   = _ms(3_000)
 
         self._mapping = mapping
         self._rounds  = sorted({e["round"] for e in entries})
@@ -277,11 +349,14 @@ class GraphWindow(QWidget):
         self._splash_content: QWidget | None = None
         self._splash_logo_lbl: QLabel | None = None
 
-        # ---- Page 0: Splash ---- Page 1: Ranking ---- Page 2: Compare ----
+        # ---- Page 0: Splash ---- Page 1: Ranking ---- Page 2: Compare ---- Page 3: Walter advert ----
         self._stack = QStackedWidget()
         self._stack.addWidget(self._build_splash_page())        # 0
         self._stack.addWidget(self._build_ranking_page())       # 1
         self._stack.addWidget(self._build_compare_page())       # 2
+        self._stack.addWidget(self._build_walter_advert_page()) # 3
+
+        self._advert_prev_index = 0
 
         main_layout = QVBoxLayout(self)
         main_layout.addWidget(self._stack)
@@ -295,6 +370,7 @@ class GraphWindow(QWidget):
         QShortcut(QKeySequence(Qt.Key.Key_Escape), self).activated.connect(self._exit_fullscreen)
         QShortcut(QKeySequence(Qt.Key.Key_Space),  self).activated.connect(self._reveal_next)
         QShortcut(QKeySequence(Qt.Key.Key_A),      self).activated.connect(self._toggle_auto)
+        QShortcut(QKeySequence(Qt.Key.Key_W),      self).activated.connect(self._toggle_walter_advert)
 
         self._auto_state = 0  # 0 = logo, 1 = compare
         self._auto_ever_started = False
@@ -306,6 +382,9 @@ class GraphWindow(QWidget):
         self._resume_timer.setSingleShot(True)
         self._resume_timer.setInterval(auto_resume_s * 1_000)
         self._resume_timer.timeout.connect(self._resume_auto)
+        self._walter_hold_timer = QTimer(self)
+        self._walter_hold_timer.setSingleShot(True)
+        self._walter_hold_timer.timeout.connect(self._start_walter_pixelout)
 
     # ------------------------------------------------------------------
     def _make_auto_btn_widget(self) -> tuple[QWidget, QPushButton]:
@@ -344,6 +423,8 @@ class GraphWindow(QWidget):
         if event.type() == QEvent.Type.MouseButtonPress:
             if obj is self._splash_content or obj is self._splash_logo_lbl:
                 self._on_logo_click()
+            elif obj is self._walter_content:
+                self._on_walter_click()
             elif obj is self._compare_canvas:
                 self._on_compare_click()
         return False
@@ -365,7 +446,15 @@ class GraphWindow(QWidget):
             self._logo_anim.stop()
             self._logo_anim = None
         self._logo_effect.setOpacity(1.0)
-        self._auto_state = 1
+        self._auto_state = 2
+        self._auto_show_compare()
+
+    def _on_walter_click(self) -> None:
+        if not self._is_auto_running():
+            return
+        self._walter_hold_timer.stop()
+        self._walter_overlay.stop()
+        self._auto_state = 2
         self._auto_show_compare()
 
     # ------------------------------------------------------------------
@@ -716,6 +805,123 @@ class GraphWindow(QWidget):
 
         return page
 
+    # ------------------------------------------------------------------
+    def _build_walter_advert_page(self) -> QWidget:
+        page = QWidget()
+        page.setStyleSheet("background-color: #0d0d1a;")
+
+        btn_style = (
+            "font-size: 36px; padding: 12px 40px; color: #FF0000;"
+            " background-color: white; border-radius: 10px;"
+        )
+
+        logo_btn = QPushButton("Logo")
+        logo_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        logo_btn.setStyleSheet(btn_style)
+        logo_btn.clicked.connect(self._jump_to_logo)
+
+        ranking_btn = QPushButton("Ranking")
+        ranking_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        ranking_btn.setStyleSheet(btn_style)
+        ranking_btn.clicked.connect(self._jump_to_ranking)
+
+        compare_btn = QPushButton("Compare")
+        compare_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        compare_btn.setStyleSheet(btn_style)
+        compare_btn.clicked.connect(self._jump_to_compare)
+
+        auto_container, _ = self._make_auto_btn_widget()
+
+        top_bar = QWidget()
+        top_bar.setStyleSheet(
+            "background-color: #FF0000;"
+            " border-top-left-radius: 16px; border-top-right-radius: 16px;"
+        )
+        header_lbl = QLabel(self._title)
+        header_lbl.setStyleSheet(
+            "color: white; font-size: 36px; font-weight: bold; background-color: transparent;"
+        )
+        top_bar_lay = QHBoxLayout(top_bar)
+        top_bar_lay.setContentsMargins(24, 8, 12, 8)
+        top_bar_lay.addWidget(header_lbl)
+        top_bar_lay.addStretch(1)
+        top_bar_lay.addWidget(logo_btn)
+        top_bar_lay.addWidget(compare_btn)
+        top_bar_lay.addWidget(auto_container)
+        top_bar_lay.addWidget(ranking_btn)
+        _TopRoundedMask(top_bar, 16)
+
+        content = QWidget()
+        content.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        content.setStyleSheet("background-color: white;")
+
+        name_lbl = QLabel("WALTER !")
+        name_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        name_lbl.setStyleSheet(
+            "color: #FF0000; font-size: 160px; font-weight: bold;"
+            " background: transparent; border: none;"
+            " margin-left: 40px; margin-top: 30px;"
+        )
+
+        tagline_lbl = QLabel("best MALER <s>in town</s> ever")
+        tagline_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom)
+        tagline_lbl.setStyleSheet(
+            "color: #FF0000; font-size: 80px; font-weight: bold; font-style: italic;"
+            " background: transparent; border: none;"
+            " margin-right: 40px; margin-bottom: 30px;"
+        )
+        tagline_lbl.setWordWrap(True)
+
+        _qr = qrcode.QRCode(box_size=6, border=2)
+        _qr.add_data("WE LOVE WALTER")
+        _qr.make(fit=True)
+        _qr_img = _qr.make_image(fill_color="#FF0000", back_color="white")
+        _buf = io.BytesIO()
+        _qr_img.save(_buf, format="PNG")
+        _qr_pixmap = QPixmap.fromImage(QImage.fromData(_buf.getvalue()))
+
+        qr_lbl = QLabel()
+        qr_lbl.setPixmap(_qr_pixmap)
+        qr_lbl.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
+        qr_lbl.setStyleSheet("background: transparent; border: none; margin-right: 40px; margin-top: 20px;")
+
+        content_lay = QVBoxLayout(content)
+
+        top_row = QWidget()
+        top_row.setStyleSheet("background: transparent;")
+        top_lay = QHBoxLayout(top_row)
+        top_lay.setContentsMargins(0, 0, 0, 0)
+        top_lay.addWidget(name_lbl)
+        top_lay.addStretch(1)
+        top_lay.addWidget(qr_lbl)
+
+        content_lay.addWidget(top_row)
+        content_lay.addStretch(1)
+        content_lay.addWidget(tagline_lbl)
+        _BottomRoundedMask(content, 16)
+
+        self._walter_content = content
+        self._walter_overlay = _PixelTrickleOverlay(content)
+        content.installEventFilter(self)
+
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(24, 24, 24, 24)
+        lay.setSpacing(0)
+        lay.addWidget(top_bar)
+        lay.addWidget(content, 1)
+
+        return page
+
+    def _toggle_walter_advert(self) -> None:
+        if self._stack.currentIndex() == 3:
+            self._stack.setCurrentIndex(self._advert_prev_index)
+        else:
+            self._advert_prev_index = self._stack.currentIndex()
+            self._stop_auto()
+            self._cancel_resume()
+            self._stack.setCurrentIndex(3)
+
+    # ------------------------------------------------------------------
     def _toggle_compare_player(self, pnum: str) -> None:
         self._stop_auto()
         self._cancel_resume()
@@ -783,7 +989,8 @@ class GraphWindow(QWidget):
             self._rank_reveal += 1
 
     def _is_auto_running(self) -> bool:
-        return self._auto_timer.isActive() or self._logo_anim is not None
+        return (self._auto_timer.isActive() or self._logo_anim is not None
+                or self._walter_hold_timer.isActive() or self._walter_overlay.isVisible())
 
     def _cancel_resume(self) -> None:
         self._resume_timer.stop()
@@ -815,6 +1022,8 @@ class GraphWindow(QWidget):
             self._logo_anim.stop()
             self._logo_anim = None
         self._logo_effect.setOpacity(1.0)
+        self._walter_hold_timer.stop()
+        self._walter_overlay.stop()
         self._set_auto_btn_text("Auto")
 
     def _set_auto_btn_text(self, text: str) -> None:
@@ -865,10 +1074,23 @@ class GraphWindow(QWidget):
         self._show_frame()
         self._auto_timer.start(self._compare_ms)
 
+    def _auto_show_walter(self) -> None:
+        self._set_auto_btn_text("Pause")
+        self._walter_overlay.stop()
+        self._stack.setCurrentIndex(3)
+        self._walter_hold_timer.start(self._walter_hold_ms)
+
+    def _start_walter_pixelout(self) -> None:
+        def _after_pixelout() -> None:
+            self._auto_timer.start(1000)
+        self._walter_overlay.start_pixelout(_after_pixelout)
+
     def _auto_next(self) -> None:
-        self._auto_state = (self._auto_state + 1) % 2
+        self._auto_state = (self._auto_state + 1) % 3
         if self._auto_state == 0:
             self._auto_show_logo()
+        elif self._auto_state == 1:
+            self._auto_show_walter()
         else:
             self._auto_show_compare()
 
