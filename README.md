@@ -1,6 +1,6 @@
 # Tarock Tournament Manager
 
-A PyQt6 desktop application for recording and managing 4-player Tarock tournament results. Tracks per-table scores, computes rankings, and displays an animated results presentation with comparison graphs.
+A PyQt6 desktop application for recording and managing 4-player Tarock tournament results. Tracks per-table scores across rounds, computes rankings, and drives an animated results presentation with comparison graphs.
 
 ---
 
@@ -34,25 +34,38 @@ pip install -r requirements.txt
 python tarockmanager.py
 ```
 
-### Command-line parameters
+### Command-line arguments
 
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `--tournament N` | integer | latest | Tournament number to open (e.g. `--tournament 3`). Opens the highest-numbered tournament folder if omitted. A new folder is created automatically if it does not exist. |
-| `--speed X` | float | `1.0` | Timer speed multiplier for the graph presentation. `0.5` is twice as fast, `2.0` is twice as slow. |
+| Argument | Short | Type | Default | Description |
+|---|---|---|---|---|
+| `--tournament N` | `-t` | integer | latest | Tournament number to open (e.g. `--tournament 13`). Opens the highest-numbered tournament folder if omitted. A new folder is created automatically if it does not exist. |
+| `--speed-auto-mode X` | `-s` | float | `1.0` | Auto-mode speed multiplier. `0.5` is twice as fast, `2.0` is twice as slow. Scales all timed transitions (logo fade, ranking hold, compare hold, Walter hold). |
+| `--auto-resume SEC` | `-r` | integer | `180` | Seconds of inactivity on the compare page before auto mode resumes automatically. |
 
 **Examples**
 
 ```bash
-# Open tournament number 5
-python tarockmanager.py --tournament 5
+# Open tournament 13
+python tarockmanager.py --tournament 13
 
 # Open the latest tournament at double speed
-python tarockmanager.py --speed 0.5
+python tarockmanager.py -s 0.5
 
-# Open tournament 2 at half speed
-python tarockmanager.py --tournament 2 --speed 2.0
+# Open tournament 5, slow auto mode, 60 s auto-resume
+python tarockmanager.py -t 5 -s 2.0 -r 60
 ```
+
+---
+
+## Data layout
+
+Each tournament stores its data in `tournaments/<N>/`:
+
+| File | Contents |
+|---|---|
+| `result.csv` | Raw game entries — table, round, and the four players' numbers and points |
+| `player_numbers.csv` | Player-number → name mapping |
+| `ranking.csv` | Computed standings (written by **Sum / Rank**) |
 
 ---
 
@@ -60,39 +73,59 @@ python tarockmanager.py --tournament 2 --speed 2.0
 
 ### Player mapping (left panel)
 
-Fill in player numbers and names, then click **Save Mapping**. This writes `player_numbers.csv` inside the tournament folder and is used to display names throughout the application.
+Fill in player numbers and names, then click **Save Mapping**. This writes `player_numbers.csv` into the tournament folder and is used to display names throughout the application. Click **Load Mapping** to reload from disk.
 
 ### Recording results (right panel)
 
 1. Set the **Round** number and **Table Number**.
-2. Enter the **Player Number** and **Points** for each of the 4 players at the table.
-3. Click **Submit** (or `Ctrl+S`) to save the entry.
-   - A table that has already been submitted for the same round cannot be submitted again — use **Change** to correct it.
+2. Enter the **Player Number** and **Points** for each of the 4 players at the table. Points must sum to zero.
+3. Click **Submit** (`Ctrl+S`) to save the entry.
+   - A table already submitted for the same round cannot be submitted again — use **Change** to correct it.
 4. Use **Previous** (`Ctrl+P`) and **Next** (`Ctrl+N`) to browse existing entries.
 5. **Change** (`Ctrl+E`) overwrites the currently displayed entry.
 6. **Delete** removes the current entry (with confirmation).
-7. **Sum / Rank** computes the overall standings and saves them to `ranking.csv`.
+7. **Sum / Rank** computes overall standings and saves them to `ranking.csv`.
 8. **Graph** opens the animated results presentation window.
 
-### Graph presentation window
+---
 
-The graph window cycles through three stages:
+## Graph presentation window
 
-1. **Splash** — animated "Cafe Pony" title screen.
-2. **Ranking** — players revealed one by one from last place to first, with medals for the top 3.
-3. **Comparison graph** — a matplotlib line chart comparing cumulative points over rounds.
+The presentation cycles through four pages:
 
-**Controls**
-
-| Key / Button | Action |
+| Page | Description |
 |---|---|
-| `Space` / **Auto** | Toggle auto-advance mode |
-| `←` / `▶` | Step backward / forward manually |
-| **Compare** | Jump directly to the comparison graph |
-| `F11` | Toggle fullscreen |
+| **Splash** | "Café Pony" logo with animated fade-in and fade-out. |
+| **Ranking** | Players revealed one by one from last place to first, with medals for the top 3. |
+| **Compare** | Matplotlib line chart of cumulative points over rounds. Toggle players in the left sidebar. |
+| **Walter** | Special advert page with a pixel-trickle wipe transition. |
+
+### Keyboard shortcuts
+
+| Key | Action |
+|---|---|
+| `Space` | Reveal the next hidden ranking row (manual mode) |
+| `A` | Toggle auto mode on / off |
+| `W` | Toggle the Walter advert page |
+| `←` / `→` | Step backward / forward through pages |
+| `F` / `F11` | Toggle fullscreen |
 | `Escape` | Exit fullscreen |
 
-In auto mode the ranking rows are revealed at 0.1 s intervals, followed by a 10 s pause before the comparison graph is shown. When the comparison graph is reached automatically, two players are selected at random for comparison. Clicking a player button in the sidebar toggles them in/out of the comparison and pauses auto mode.
+### Navigation buttons
+
+Every page has **Logo**, **Compare**, and **Ranking** buttons in the header bar. Clicking **Ranking** while already on the ranking page reveals the next row (same as `Space`).
+
+### Auto mode
+
+Auto mode cycles through three stages continuously:
+
+1. **Logo** — the "Café Pony" title fades in and out.
+2. **Walter** — the Walter advert is shown, then wiped away with a pixel-trickle effect.
+3. **Compare** — two players are selected at random and shown on the comparison graph.
+
+Interacting with the compare graph while auto mode has ever been started will pause auto mode and schedule an automatic resume after `--auto-resume` seconds (shown as "(autoresume)" under the Auto button).
+
+Clicking the logo or Walter advert while auto mode is running skips the current stage immediately.
 
 ---
 
@@ -109,5 +142,3 @@ python setup.py build
 ```
 
 The compiled executable is placed in the `build/` folder. On Windows the application runs without a console window.
-
-> **Note:** Make sure `player_numbers.csv` and `result.csv` exist in the project root before building, as they are bundled into the executable by `setup.py`.
