@@ -86,6 +86,7 @@ Fill in player numbers and names, then click **Save Mapping**. This writes `play
 6. **Delete** removes the current entry (with confirmation).
 7. **Sum / Rank** computes overall standings and saves them to `ranking.csv`.
 8. **Graph** opens the animated results presentation window.
+9. **Export HTML** renders the latest tournament's `ranking.csv` into a standalone results page at `docs/index.html` for local preview. See [Publishing results to GitHub Pages](#publishing-results-to-github-pages).
 
 ---
 
@@ -126,6 +127,18 @@ Auto mode cycles through three stages continuously:
 Interacting with the compare graph while auto mode has ever been started will pause auto mode and schedule an automatic resume after `--auto-resume` seconds (shown as "(autoresume)" under the Auto button).
 
 Clicking the logo or Walter advert while auto mode is running skips the current stage immediately.
+
+---
+
+## Publishing results to GitHub Pages
+
+`scripts/export_html.py` renders the highest-numbered tournament with a `ranking.csv` into a standalone HTML results page. It has no PyQt dependency, so it can also run headless in CI.
+
+`.github/workflows/pages.yml` rebuilds and deploys that page automatically: on every push to `main` that touches a `ranking.csv`, it regenerates `docs/index.html` and publishes it via GitHub Pages. `docs/` itself is gitignored — it's a build artifact, never committed.
+
+**One-time setup:** in the repo's GitHub settings, go to **Settings → Pages** and set **Build and deployment → Source** to **GitHub Actions**.
+
+**Ongoing use:** after running **Sum / Rank**, commit and push the updated `ranking.csv` — the site rebuilds automatically. Use the **Export HTML** button to preview the page locally first.
 
 ---
 

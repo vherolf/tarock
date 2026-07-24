@@ -3,6 +3,10 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# Generated results page (rebuilt by .github/workflows/pages.yml and the
+# in-app "Export HTML" button — not committed)
+/docs/
+
 # C extensions
 *.so
 

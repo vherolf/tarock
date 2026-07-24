@@ -15,6 +15,9 @@ import csv
 import qrcode
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent / "scripts"))
+import export_html  # noqa: E402
+
 from PyQt6.QtWidgets import (
     QApplication,
     QWidget,
@@ -896,7 +899,22 @@ class GraphWindow(QWidget):
         top_lay.addWidget(qr_lbl)
 
         content_lay.addWidget(top_row)
-        content_lay.addStretch(1)
+
+        walter_img_path = Path(__file__).parent / "images" / "walter2.png"
+        if walter_img_path.exists():
+            walter_pixmap = QPixmap(str(walter_img_path))
+            walter_img_lbl = QLabel()
+            walter_img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            walter_img_lbl.setStyleSheet("background: transparent; border: none;")
+            walter_img_lbl.setPixmap(
+                walter_pixmap.scaledToHeight(400, Qt.TransformationMode.SmoothTransformation)
+            )
+            content_lay.addStretch(1)
+            content_lay.addWidget(walter_img_lbl)
+            content_lay.addStretch(1)
+        else:
+            content_lay.addStretch(1)
+
         content_lay.addWidget(tagline_lbl)
         _BottomRoundedMask(content, 16)
 
@@ -1086,11 +1104,9 @@ class GraphWindow(QWidget):
         self._walter_overlay.start_pixelout(_after_pixelout)
 
     def _auto_next(self) -> None:
-        self._auto_state = (self._auto_state + 1) % 3
+        self._auto_state = (self._auto_state + 1) % 2
         if self._auto_state == 0:
             self._auto_show_logo()
-        elif self._auto_state == 1:
-            self._auto_show_walter()
         else:
             self._auto_show_compare()
 
@@ -1323,6 +1339,7 @@ class MainWindow(QWidget):
         delete_btn = QPushButton("Delete")
         sum_btn = QPushButton("Sum / Rank")
         graph_btn = QPushButton("Graph")
+        export_btn = QPushButton("Export HTML")
 
         submit_btn.clicked.connect(self._on_submit)
         change_btn.clicked.connect(self._on_change)
@@ -1332,6 +1349,7 @@ class MainWindow(QWidget):
         delete_btn.clicked.connect(self._delete_current)
         sum_btn.clicked.connect(self._on_sum_and_rank)
         graph_btn.clicked.connect(self._on_show_graph)
+        export_btn.clicked.connect(self._on_export_html)
 
         for btn in (clear_btn, delete_btn, prev_btn, next_btn):
             btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -1353,6 +1371,7 @@ class MainWindow(QWidget):
         layout.addStretch()
         layout.addWidget(sum_btn)
         layout.addWidget(graph_btn)
+        layout.addWidget(export_btn)
         layout.addWidget(clear_btn)
         layout.addWidget(delete_btn)
         return layout
@@ -1682,6 +1701,21 @@ class MainWindow(QWidget):
 
         self.output_display.setPlainText("\n".join(display_lines))
         self._set_status(f"Ranking generated – also saved to {self._ranking_file}.")
+
+    # ------------------------------------------------------------------
+    def _on_export_html(self) -> None:
+        if not self._ranking_file.exists():
+            self._set_status("No ranking.csv yet – run 'Sum / Rank' first.", error=True)
+            return
+
+        out_path = export_html.REPO_ROOT / "docs" / "index.html"
+        try:
+            export_html.build(self._ranking_file.parent, out_path)
+        except Exception as exc:
+            self._set_status(f"Could not export HTML: {exc}", error=True)
+            return
+
+        self._set_status(f"Results page exported to {out_path}.")
 
 
 # ----------------------------------------------------------------------
