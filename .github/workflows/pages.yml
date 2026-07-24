@@ -28,6 +28,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install dependencies
+        run: pip install "qrcode[pil]"
+
       - name: Build results page
         run: python scripts/export_html.py --out docs/index.html
 

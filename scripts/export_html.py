@@ -8,15 +8,32 @@ GitHub Pages.
 from __future__ import annotations
 
 import argparse
+import base64
 import csv
 import html
+import io
 from datetime import datetime
 from pathlib import Path
+
+import qrcode
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TOURNAMENTS_DIR = REPO_ROOT / "tournaments"
 
+PAGE_URL = "https://vherolf.github.io/tarock/"
+
 _ROW_ACCENT = {1: "#FFD700", 2: "#C0C0C0", 3: "#CD7F32"}
+
+
+def _qr_data_uri(url: str) -> str:
+    qr = qrcode.QRCode(box_size=6, border=2)
+    qr.add_data(url)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="#FF0000", back_color="white")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    encoded = base64.b64encode(buf.getvalue()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
 
 
 def _ordinal(n: int) -> str:
@@ -41,7 +58,7 @@ def read_ranking(ranking_csv: Path) -> list[dict]:
     return rows
 
 
-def render_html(title: str, rows: list[dict], generated_at: datetime) -> str:
+def render_html(title: str, rows: list[dict], generated_at: datetime, page_url: str = PAGE_URL) -> str:
     body_rows = []
     for row in rows:
         rank = int(row["Rank"])
@@ -51,11 +68,13 @@ def render_html(title: str, rows: list[dict], generated_at: datetime) -> str:
         row_style = f' style="background:{accent}22;"' if accent else ""
         medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(rank, "")
         body_rows.append(
-            f'      <tr{row_style}>'
+            f'        <tr{row_style}>'
             f'<td class="rank">{rank}{" " + medal if medal else ""}</td>'
             f'<td class="name">{name}</td>'
             f'<td class="points">{points}</td></tr>'
         )
+
+    qr_uri = _qr_data_uri(page_url)
 
     return f"""<!doctype html>
 <html lang="en">
@@ -91,9 +110,24 @@ def render_html(title: str, rows: list[dict], generated_at: datetime) -> str:
     margin-bottom: 32px;
     text-align: center;
   }}
+  .panels {{
+    width: 100%;
+    max-width: 900px;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: flex-start;
+    gap: 32px;
+  }}
+  .panel {{
+    flex: 1 1 380px;
+    max-width: 420px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }}
   table {{
     width: 100%;
-    max-width: 560px;
     border-collapse: collapse;
     background: #1a1a2e;
     border-radius: 12px;
@@ -116,6 +150,26 @@ def render_html(title: str, rows: list[dict], generated_at: datetime) -> str:
   td.rank {{ width: 64px; color: #ccc; font-variant-numeric: tabular-nums; }}
   td.points {{ text-align: right; font-weight: bold; font-variant-numeric: tabular-nums; }}
   th:last-child, td.points {{ text-align: right; }}
+  .qr-card {{
+    background: #fff;
+    padding: 16px;
+    border-radius: 12px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  }}
+  .qr-card img {{
+    display: block;
+    width: 220px;
+    height: 220px;
+  }}
+  .qr-caption {{
+    margin-top: 16px;
+    color: #ccc;
+    font-size: 14px;
+    text-align: center;
+  }}
+  .qr-caption a {{
+    color: #fff;
+  }}
   footer {{
     margin-top: 32px;
     color: #666;
@@ -127,21 +181,31 @@ def render_html(title: str, rows: list[dict], generated_at: datetime) -> str:
 <body>
   <h1>{html.escape(title)}</h1>
   <p class="subtitle">Final ranking</p>
-  <table>
-    <thead>
-      <tr><th>#</th><th>Player</th><th>Points</th></tr>
-    </thead>
-    <tbody>
+  <div class="panels">
+    <div class="panel">
+      <table>
+        <thead>
+          <tr><th>#</th><th>Player</th><th>Points</th></tr>
+        </thead>
+        <tbody>
 {chr(10).join(body_rows)}
-    </tbody>
-  </table>
+        </tbody>
+      </table>
+    </div>
+    <div class="panel">
+      <div class="qr-card">
+        <img src="{qr_uri}" alt="QR code linking to this page">
+      </div>
+      <p class="qr-caption">Scan for the live results<br><a href="{html.escape(page_url)}">{html.escape(page_url)}</a></p>
+    </div>
+  </div>
   <footer>Generated {generated_at:%Y-%m-%d %H:%M}</footer>
 </body>
 </html>
 """
 
 
-def build(tournament_dir: Path, out_path: Path) -> Path:
+def build(tournament_dir: Path, out_path: Path, page_url: str = PAGE_URL) -> Path:
     ranking_csv = tournament_dir / "ranking.csv"
     rows = read_ranking(ranking_csv)
     num = int(tournament_dir.name) if tournament_dir.name.isdigit() else 0
@@ -149,7 +213,7 @@ def build(tournament_dir: Path, out_path: Path) -> Path:
     generated_at = datetime.fromtimestamp(ranking_csv.stat().st_mtime)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(render_html(title, rows, generated_at), encoding="utf-8")
+    out_path.write_text(render_html(title, rows, generated_at, page_url), encoding="utf-8")
     return out_path
 
 
@@ -163,6 +227,10 @@ def main() -> None:
         "--out", type=Path, default=REPO_ROOT / "docs" / "index.html",
         help="Output HTML path (default: docs/index.html)",
     )
+    parser.add_argument(
+        "--url", default=PAGE_URL,
+        help=f"URL to encode in the QR code (default: {PAGE_URL})",
+    )
     args = parser.parse_args()
 
     if args.tournament is not None:
@@ -174,7 +242,7 @@ def main() -> None:
         if tournament_dir is None:
             raise SystemExit("No tournament with a ranking.csv found under tournaments/")
 
-    out_path = build(tournament_dir, args.out)
+    out_path = build(tournament_dir, args.out, args.url)
     print(f"Wrote {out_path} from {tournament_dir}")
 
 
