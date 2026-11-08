@@ -35,8 +35,8 @@ Two separate programs share one SQLite database (`tournaments/tournaments.db`):
 | Program | Role | Database access |
 |---|---|---|
 | `tarockmanager.py` | Data entry: players, table results, ranking view | read / write |
-| `presenter.py` | Animated results presentation | **read-only** (SQLite rejects any write) |
-| `tarock_core/` | Shared, Qt-free code: schema + validation (`db.py`), ranking rules (`ranking.py`), CSV import/export (`csv_io.py`) | - |
+| `presenter.py` + `tarock_presenter/` | Animated results presentation (entry point + window code) | **read-only** (SQLite rejects any write) |
+| `tarock_core/` | Shared, Qt-free code: schema + validation (`db.py`), ranking rules (`ranking.py`), CSV import/export (`csv_io.py`), HTML export, consistency check | - |
 
 The database is the single source of truth. It is local and gitignored. After every change the entry tool also writes
 `result.csv`, `player_numbers.csv` and `ranking.csv` to `tournaments/<N>/` (derived copies, committed for the GitHub Pages site).
@@ -68,6 +68,7 @@ The presentation also accepts:
 |---|---|---|---|
 | `--speed-auto-mode X` | `-s` | `1.0` | Auto-mode speed multiplier. `0.5` is twice as fast, `2.0` twice as slow. |
 | `--auto-resume SEC` | `-r` | `180` | Seconds of inactivity on the compare page before auto mode resumes. |
+| `--auto-stages LIST` | | `logo,compare` | Stages auto mode cycles through, from `logo`, `walter`, `compare` (e.g. `logo,walter,compare`). |
 
 The presentation updates live: it polls the database (about once a second) and rebuilds the ranking and compare pages when the entry tool saves, keeping the current page, the revealed rows and the selected players. It never writes to the database.
 
@@ -81,8 +82,11 @@ Validates every row and imports each tournament all-or-nothing. Invalid rows are
 ### Tests
 
 ```bash
-python -m pytest tests
+python -m pytest tests     # ~12 s; GUI tests run headless (Qt offscreen platform)
 ```
+
+The rules are kept out of the GUI so they can be tested: ranking and database rules (`tarock_core`), the auto-mode state machine
+(`tarock_presenter/automode.py`) and the display data (`tarock_presenter/viewmodel.py`) are plain Python; the window itself is covered by headless GUI tests.
 
 ---
 
@@ -129,27 +133,40 @@ Every page has **Logo**, **Compare**, and **Ranking** buttons in the header bar.
 
 ### Auto mode
 
-Auto mode cycles through three stages continuously:
+Auto mode cycles through its stages continuously. By default these are two (change them with `--auto-stages`):
 
 1. **Logo** — the "Café Pony" title fades in and out.
-2. **Walter** — the Walter advert is shown, then wiped away with a pixel-trickle effect.
-3. **Compare** — two players are selected at random and shown on the comparison graph.
+2. **Compare** — two players are selected at random and shown on the comparison graph.
 
-Interacting with the compare graph while auto mode has ever been started will pause auto mode and schedule an automatic resume after `--auto-resume` seconds (shown as "(autoresume)" under the Auto button).
+The optional **Walter** stage shows the Walter advert and then wipes it away with a pixel-trickle effect
+(`--auto-stages logo,walter,compare`). The advert is always available manually with the `W` key.
 
-Clicking the logo or Walter advert while auto mode is running skips the current stage immediately.
+Interacting with the compare graph (selecting a player, clicking the chart) after auto mode has been started pauses it and
+schedules an automatic resume after `--auto-resume` seconds (shown as "(autoresume)" under the Auto button).
+Navigating manually (buttons, arrow keys, `W`) stops auto mode without a resume.
+
+Clicking the logo or Walter advert while auto mode is running skips to the next stage immediately.
 
 ---
 
 ## Publishing results to GitHub Pages
 
-`scripts/export_html.py` renders the highest-numbered tournament with a `ranking.csv` into a standalone HTML results page. It has no PyQt dependency, so it can also run headless in CI.
+Publishing is explicit: the page shows the tournament named in **`tournaments/published.txt`** (a file containing just
+the number, e.g. `16`). Newer or test tournaments are never published by accident, and without the file nothing is built.
 
-`.github/workflows/pages.yml` rebuilds and deploys that page automatically: on every push to `main` that touches a `ranking.csv`, it regenerates `docs/index.html` and publishes it via GitHub Pages. `docs/` itself is gitignored — it's a build artifact, never committed.
+`.github/workflows/pages.yml` runs on every push to `main` that touches `tournaments/**`, `tarock_core/**` or the scripts:
 
-**One-time setup:** in the repo's GitHub settings, go to **Settings → Pages** and set **Build and deployment → Source** to **GitHub Actions**.
+1. `scripts/check_data.py` verifies that the committed CSVs are consistent: every tournament's `result.csv` +
+   `player_numbers.csv` must pass all database rules, and `ranking.csv` must equal the ranking computed from `result.csv`
+   (not stale, not edited by hand). A failure stops the deployment.
+2. `scripts/export_html.py` renders the published tournament to `docs/index.html` and it is deployed. `docs/` is
+   gitignored - a build artifact.
 
-**Ongoing use:** after entering results, commit and push the updated `tournaments/<N>/*.csv` — the site rebuilds automatically. Use the **Export HTML** button to preview the page locally first.
+**One-time setup:** in the repo's GitHub settings, go to **Settings -> Pages** and set **Build and deployment -> Source** to **GitHub Actions**.
+
+**Ongoing use:** enter results (the CSV copies in `tournaments/<N>/` update on every save), then commit and push them.
+To publish a different tournament, change the number in `tournaments/published.txt`. Run `python scripts/check_data.py`
+locally to see what CI will check. The **Export HTML** button renders the *current* tournament to `docs/index.html` as a local preview.
 
 ---
 
@@ -158,4 +175,6 @@ Clicking the logo or Walter advert while auto mode is running skips the current 
 ```bash
 ./build.sh     # PyInstaller -> dist/tarockmanager and dist/presenter
 ```
-(The frozen builds are untested; `tarock_core/paths.py` locates the repo relative to the source files.)
+Keep both executables in the same folder: **Present** starts `presenter` from next to `tarockmanager`.
+The `tournaments/` folder (database and CSVs) and `docs/` are read and written next to the executables, while
+`images/` is bundled inside `presenter`. The frozen builds are covered by unit tests of the path logic but have not been run end to end.

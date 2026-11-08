@@ -11,7 +11,6 @@ pip install pyinstaller --quiet
 # Data entry tool
 pyinstaller --onefile --name tarockmanager \
     --collect-all tarock_core \
-    --add-data "scripts:scripts" \
     tarockmanager.py
 
 # Presentation tool (needs the images folder for the Walter page)

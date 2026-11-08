@@ -4,8 +4,9 @@ on:
   push:
     branches: ["main"]
     paths:
-      - "tournaments/**/ranking.csv"
+      - "tournaments/**"
       - "scripts/export_html.py"
+      - "scripts/check_data.py"
       - "tarock_core/**"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
@@ -32,7 +33,10 @@ jobs:
       - name: Install dependencies
         run: pip install "qrcode[pil]"
 
-      - name: Build results page
+      - name: Check that the committed CSVs are consistent
+        run: python scripts/check_data.py
+
+      - name: Build results page (tournament named in tournaments/published.txt)
         run: python scripts/export_html.py --out docs/index.html
 
       - uses: actions/upload-pages-artifact@v3

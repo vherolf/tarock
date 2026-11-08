@@ -19,11 +19,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from tarock_core import csv_io, db, ranking
-from tarock_core.paths import DEFAULT_DB, REPO_ROOT, ordinal
-
-sys.path.insert(0, str(REPO_ROOT / "scripts"))
-import export_html  # noqa: E402
+from tarock_core import csv_io, db, html_export, ranking
+from tarock_core.paths import DATA_ROOT, DEFAULT_DB, ordinal, sibling_program
 
 from PyQt6.QtWidgets import (
     QApplication,
@@ -620,9 +617,9 @@ class MainWindow(QWidget):
 
     def _on_export_html(self) -> None:
         self._after_write()
-        out_path = REPO_ROOT / "docs" / "index.html"
+        out_path = DATA_ROOT / "docs" / "index.html"
         try:
-            export_html.build(self._export_dir, out_path)
+            html_export.build(self._export_dir, out_path)
         except Exception as exc:
             self._set_status(f"Could not export HTML: {exc}", error=True)
             return
@@ -630,10 +627,11 @@ class MainWindow(QWidget):
 
     def _on_present(self) -> None:
         """Open the read-only presentation tool as a separate process."""
-        script = REPO_ROOT / "presenter.py"
-        subprocess.Popen(
-            [sys.executable, str(script), "--db", str(self._db_path), "-t", str(self._tournament)]
-        )
+        cmd = sibling_program("presenter", "presenter.py")
+        try:
+            subprocess.Popen(cmd + ["--db", str(self._db_path), "-t", str(self._tournament)])
+        except OSError as exc:
+            self._set_status(f"Could not start the presenter: {exc}", error=True)
 
     def closeEvent(self, event) -> None:
         self._conn.close()
