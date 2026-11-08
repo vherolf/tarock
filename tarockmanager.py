@@ -107,8 +107,8 @@ class MainWindow(QWidget):
         panels = QHBoxLayout()
         left = self._build_left_panel()
         # Player mapping keeps a modest width; the entry form gets the rest when maximized.
-        left.setMinimumWidth(240)
-        left.setMaximumWidth(380)
+        left.setMinimumWidth(330)
+        left.setMaximumWidth(400)
         panels.addWidget(left, 1)
         panels.addWidget(self._build_right_panel(), 4)
 
@@ -176,6 +176,7 @@ class MainWindow(QWidget):
         self.output_display = QTextEdit()
         self.output_display.setReadOnly(True)
         self.output_display.setPlaceholderText("Current card will appear here…")
+        self.output_display.setMinimumHeight(200)  # a card (4 players) fits without scrolling
         main_layout.addWidget(self.output_display)
 
         widget.setLayout(main_layout)
@@ -215,7 +216,7 @@ class MainWindow(QWidget):
 
             name_lbl = QLabel()
             name_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            name_lbl.setMinimumHeight(name_lbl.fontMetrics().height() + 6)  # no jump when a name appears
+            name_lbl.setMinimumHeight(name_lbl.fontMetrics().height() + 16)  # no jump when a name appears
 
             self.player_spins.append(player_num_le)
             self.player_name_labels.append(name_lbl)
@@ -265,8 +266,8 @@ class MainWindow(QWidget):
         layout.addWidget(submit_btn)
         layout.addWidget(prev_btn)
         layout.addWidget(next_btn)
-        layout.addStretch()
         layout.addWidget(sum_btn)
+        layout.addStretch()
         layout.addWidget(graph_btn)
         layout.addWidget(export_btn)
         layout.addWidget(clear_btn)
@@ -476,19 +477,40 @@ class MainWindow(QWidget):
             self._display_current_card()
 
     # ------------------------------------------------------------------
+    def _card_html(self, game: db.Game, number: int, total: int) -> str:
+        """One table's result: names side by side on the first line, points below each name.
+
+        Same column order as the entry fields; the top scorer(s) get a tinted column.
+        """
+        top = max(points for _, points in game.seats)
+        names, points_row = [], []
+        for player, points in game.seats:
+            winner = points == top
+            bg = ' bgcolor="#FFF1B8"' if winner else ""
+            color = "#b00020" if points < 0 else "#000"
+            names.append(
+                f'<td align="center" width="25%"{bg} style="padding:4px 8px; border-bottom:2px solid #999; white-space:nowrap;">'
+                f'<span style="color:#999; font-size:small;">#{player}</span>'
+                f' <b>{html.escape(self._name(player))}</b></td>'
+            )
+            points_row.append(
+                f'<td align="center"{bg} style="padding:6px 8px; font-size:xx-large; color:{color};">'
+                f"<b>{points:+d}</b></td>"
+            )
+        return (
+            f'<div style="margin:0 0 6px 0;"><span style="font-size:x-large; font-weight:bold;">'
+            f'Round {game.round} &middot; Table {game.table}</span>'
+            f' &nbsp;<span style="color:#888; font-size:small;">entry {number} of {total}</span></div>'
+            f'<table width="100%" cellspacing="0">'
+            f'<tr>{"".join(names)}</tr><tr>{"".join(points_row)}</tr></table>'
+        )
+
     def _display_current_card(self) -> None:
         if self.current_index == -1 or not self.games:
             self.output_display.clear()
             return
         game = self.games[self.current_index]
-        lines = [
-            f"Entry {self.current_index + 1} of {len(self.games)}",
-            f"Table: {game.table}",
-            f"Round: {game.round}",
-        ]
-        for player, points in game.seats:
-            lines.append(f"{self._name(player)} - Points: {points}")
-        self.output_display.setPlainText("\n".join(lines))
+        self.output_display.setHtml(self._card_html(game, self.current_index + 1, len(self.games)))
         self._clear_status()
 
     def _on_round_or_table_changed(self, *_) -> None:
