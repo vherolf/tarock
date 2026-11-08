@@ -93,8 +93,8 @@ Fill in numbers and names, then **Save Mapping**. Names must be unique; a player
 
 ### Recording results (right panel)
 1. Set **Round** and **Table Number**, then the 4 player numbers (must be in the mapping) and points (must sum to 0).
-2. **Submit** (`Ctrl+S`) stores the game; invalid input is rejected with a reason.
-3. **Previous** / **Next** (`Ctrl+P` / `Ctrl+N`) browse games; **Change** (`Ctrl+E`) overwrites the shown game; **Delete** removes it.
+2. **Submit** (`Ctrl+S`) stores the game; invalid input is rejected with a reason. If the round/table already has a result, a warning asks whether to overwrite it (the default answer keeps the existing result).
+3. **Previous** / **Next** (`Ctrl+P` / `Ctrl+N`) browse games; **Delete** removes the shown game. To correct a game, edit it and press **Submit** again.
 4. **Ranking** shows standings (with wins and best round; `=` marks a shared rank).
 5. **Present** launches the presentation program for this tournament.
 6. **Export HTML** renders `docs/index.html` locally. See [Publishing results to GitHub Pages](#publishing-results-to-github-pages).

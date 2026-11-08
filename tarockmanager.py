@@ -233,7 +233,6 @@ class MainWindow(QWidget):
 
     def _build_buttons(self) -> QHBoxLayout:
         submit_btn = QPushButton("Submit")
-        change_btn = QPushButton("Change")
         prev_btn = QPushButton("Previous")
         next_btn = QPushButton("Next")
         clear_btn = QPushButton("Clear")
@@ -243,7 +242,6 @@ class MainWindow(QWidget):
         export_btn = QPushButton("Export HTML")
 
         submit_btn.clicked.connect(self._on_submit)
-        change_btn.clicked.connect(self._on_change)
         prev_btn.clicked.connect(self._show_previous)
         next_btn.clicked.connect(self._show_next)
         clear_btn.clicked.connect(self._clear_fields)
@@ -258,7 +256,6 @@ class MainWindow(QWidget):
         # Ctrl+C intentionally omitted — conflicts with system copy shortcut
         QShortcut(QKeySequence("Ctrl+S"), self).activated.connect(self._on_submit)
         QShortcut(QKeySequence("Meta+S"), self).activated.connect(self._on_submit)
-        QShortcut(QKeySequence("Ctrl+E"), self).activated.connect(self._on_change)
         QShortcut(QKeySequence("Ctrl+P"), self).activated.connect(self._show_previous)
         QShortcut(QKeySequence("Meta+P"), self).activated.connect(self._show_previous)
         QShortcut(QKeySequence("Ctrl+N"), self).activated.connect(self._show_next)
@@ -266,7 +263,6 @@ class MainWindow(QWidget):
 
         layout = QHBoxLayout()
         layout.addWidget(submit_btn)
-        layout.addWidget(change_btn)
         layout.addWidget(prev_btn)
         layout.addWidget(next_btn)
         layout.addStretch()
@@ -397,8 +393,16 @@ class MainWindow(QWidget):
         form = self._read_form()
         if form is None:
             return
+        round_, table, seats = form
+        existing = next((g for g in self.games if (g.round, g.table) == (round_, table)), None)
+        if existing is not None and not self._confirm_overwrite(existing, seats):
+            self._set_status("Not saved - the existing result was kept.")
+            return
         try:
-            game_id = db.save_game(self._conn, self._tournament, *form)
+            game_id = db.save_game(
+                self._conn, self._tournament, *form,
+                game_id=existing.id if existing else None,
+            )
         except db.ValidationError as exc:
             self._set_status(str(exc), error=True)
             return
@@ -406,22 +410,27 @@ class MainWindow(QWidget):
         self.current_index = next(i for i, g in enumerate(self.games) if g.id == game_id)
         self._populate_form(self.games[self.current_index])
         self._display_current_card()
+        self._set_status(f"{'Updated' if existing else 'Saved'} round {round_}, table {table}.")
 
-    def _on_change(self) -> None:
-        if self.current_index == -1:
-            self._set_status("No entry selected to change.", error=True)
-            return
-        form = self._read_form()
-        if form is None:
-            return
-        game_id = self.games[self.current_index].id
-        try:
-            db.save_game(self._conn, self._tournament, *form, game_id=game_id)
-        except db.ValidationError as exc:
-            self._set_status(str(exc), error=True)
-            return
-        self._after_write()
-        self._display_current_card()
+    def _confirm_overwrite(self, existing: db.Game, new_seats: list[tuple[int, int]]) -> bool:
+        """Warn that this round/table already has a result; True if the user wants to replace it."""
+        def describe(seats) -> str:
+            return "\n".join(f"   {self._name(p)} ({p}): {pts:+d}" for p, pts in seats)
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Result already exists")
+        box.setText(f"Round {existing.round}, table {existing.table} already has a result.")
+        box.setInformativeText("Do you want to overwrite it?")
+        box.setDetailedText(
+            f"Stored result:\n{describe(existing.seats)}\n\nNew result:\n{describe(new_seats)}"
+        )
+        overwrite = box.addButton("Overwrite", QMessageBox.ButtonRole.DestructiveRole)
+        cancel = box.addButton("Keep existing", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(cancel)  # Enter must not overwrite by accident
+        box.setEscapeButton(cancel)
+        box.exec()
+        return box.clickedButton() is overwrite
 
     def _show_previous(self) -> None:
         if not self.games:
@@ -496,7 +505,7 @@ class MainWindow(QWidget):
                 self._set_status(f"Loaded round {key[0]}, table {key[1]}.")
                 return
         # No result for this round/table: empty form, ready for a new entry.
-        # current_index = -1 so Change can't overwrite the previously shown game.
+        # current_index = -1: nothing is selected until the new game is submitted.
         self.current_index = -1
         for spin, sb in zip(self.player_spins, self.points_spins):
             spin.set_number(None)
