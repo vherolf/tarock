@@ -105,8 +105,12 @@ class MainWindow(QWidget):
         )
 
         panels = QHBoxLayout()
-        panels.addWidget(self._build_left_panel())
-        panels.addWidget(self._build_right_panel())
+        left = self._build_left_panel()
+        # Player mapping keeps a modest width; the entry form gets the rest when maximized.
+        left.setMinimumWidth(240)
+        left.setMaximumWidth(380)
+        panels.addWidget(left, 1)
+        panels.addWidget(self._build_right_panel(), 4)
 
         outer_layout = QVBoxLayout()
         outer_layout.setSpacing(8)
@@ -120,6 +124,8 @@ class MainWindow(QWidget):
         grid_widget = QWidget()
         left_grid = QGridLayout()
         left_grid.setSpacing(4)
+        left_grid.setColumnStretch(0, 1)  # number: narrow
+        left_grid.setColumnStretch(1, 3)  # name: wide
 
         self.mapping_edits: list[tuple[QLineEdit, QLineEdit]] = []
         self.mapping: dict[int, str] = {}
