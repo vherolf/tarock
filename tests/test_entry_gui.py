@@ -578,3 +578,19 @@ def test_points_fields_accept_up_to_the_database_limit(make_window):
     win._on_submit()
     assert stored(win)[-1].seats[:2] == ((5, 1000), (6, -1000))
     assert consistency.check_tournament_dir(win._export_dir) == []
+
+
+# ------------------------------------------------------------ result card layout ----
+def test_every_result_card_fits_the_box_without_a_scrollbar_even_with_long_names(make_window, app):
+    long_names = {1: "Roland/Gerald", 2: "Annemarie", 3: "Maximiliane", 4: "Hannes", 5: "Eve", 6: "Finn", 7: "Gil", 8: "Hal"}
+    win = make_window(players=long_names, games=(
+        (1, 1, [(1, 12), (2, -4), (3, -6), (4, -2)]),
+        (1, 2, [(5, 7), (6, -7), (7, 0), (8, 0)]),
+    ))
+    win.resize(1100, 300)                                  # as small as the window allows
+    app.processEvents()
+    for index in range(len(win.games)):
+        win._select(index)
+        app.processEvents()
+        assert win.output_display.verticalScrollBar().maximum() == 0, f"card {index} needs a scrollbar"
+        assert win.output_display.horizontalScrollBar().maximum() == 0

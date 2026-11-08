@@ -201,7 +201,7 @@ class MainWindow(QWidget):
         self.output_display = QTextEdit()
         self.output_display.setReadOnly(True)
         self.output_display.setPlaceholderText("Current card will appear here…")
-        self.output_display.setMinimumHeight(200)  # a card (4 players) fits without scrolling
+        self.output_display.setMinimumHeight(230)  # a result card (number above name, points below) fits without scrolling
         main_layout.addWidget(self.output_display)
 
         widget.setLayout(main_layout)

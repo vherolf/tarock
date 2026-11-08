@@ -24,7 +24,8 @@ RANK_STYLE = {
 def card_html(game: Game, number: int, total: int, names: dict[int, str]) -> str:
     """One table's result: names side by side on the first line, points below each name.
 
-    Same column order as the entry fields; the top scorer(s) get a tinted column.
+    Same column order as the entry fields; the player number sits in grey type, as large as the name, above it;
+    the top scorer(s) get a tinted column.
     `number` / `total` position this game among all stored games ("entry 2 of 24").
     """
     top = max(points for _, points in game.seats)
@@ -35,8 +36,8 @@ def card_html(game: Game, number: int, total: int, names: dict[int, str]) -> str
         name = html.escape(names.get(player, str(player)))
         name_cells.append(
             f'<td align="center" width="25%"{bg} style="padding:4px 8px; border-bottom:2px solid #999; white-space:nowrap;">'
-            f'<span style="color:#999; font-size:small;">#{player}</span>'
-            f" <b>{name}</b></td>"
+            f'<span style="color:#999;">#{player}</span><br>'      # number above the name, same size as the name
+            f"<b>{name}</b></td>"
         )
         point_cells.append(
             f'<td align="center"{bg} style="padding:6px 8px; font-size:xx-large; color:{color};">'

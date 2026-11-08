@@ -43,7 +43,7 @@ def test_card_marks_negative_points_red():
 def test_card_escapes_html_in_names_and_falls_back_to_the_number():
     out = html_views.card_html(game(), 1, 1, {1: "<b>Evil</b> & Co", 2: "Bob", 3: "Cleo"})   # 4 has no name
     assert "<b>Evil</b>" not in out and "&lt;b&gt;Evil&lt;/b&gt; &amp; Co" in out
-    assert "#4</span> <b>4</b>" in out
+    assert "#4</span><br><b>4</b>" in out
 
 
 # ---------------------------------------------------------------- ranking ----
@@ -94,3 +94,10 @@ def test_round_cell_formats():
     assert "&ndash;" in html_views.round_cell(7, None, "")
     assert "+3" in html_views.round_cell(7, 3, "") and "+7" in html_views.round_cell(7, 3, "")
     assert html_views.NEGATIVE in html_views.round_cell(-2, -2, "")
+
+
+def test_card_puts_the_number_above_the_name_not_beside_it():
+    out = html_views.card_html(game(), 1, 1, NAMES)
+    for number, name in ((1, "Anna"), (2, "Bob"), (3, "Cleo"), (4, "Dan")):
+        assert f"#{number}</span><br><b>{name}</b>" in out
+        assert f"#{number}</span> <b>{name}</b>" not in out
