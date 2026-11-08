@@ -15,7 +15,9 @@ from pathlib import Path
 
 SCHEMA_VERSION = 1
 
-SCHEMA = """
+MAX_POINTS = 1000   # a player's points in one game must be within +/- this
+
+SCHEMA = f"""
 CREATE TABLE tournament (
     number     INTEGER PRIMARY KEY CHECK (number >= 0),
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -44,7 +46,7 @@ CREATE TABLE result (
     round      INTEGER NOT NULL,
     seat       INTEGER NOT NULL CHECK (seat BETWEEN 1 AND 4),
     player     INTEGER NOT NULL,
-    points     INTEGER NOT NULL CHECK (points BETWEEN -1000 AND 1000),
+    points     INTEGER NOT NULL CHECK (points BETWEEN -{MAX_POINTS} AND {MAX_POINTS}),
     PRIMARY KEY (game_id, seat),
     -- a player sits at exactly one table per round
     UNIQUE (tournament, round, player),
@@ -197,6 +199,8 @@ def validate_game(
     nums = [p for p, _ in seats]
     if len(set(nums)) != 4:
         raise ValidationError("All four player numbers must be unique.")
+    if any(abs(points) > MAX_POINTS for _, points in seats):
+        raise ValidationError(f"Points must be between -{MAX_POINTS} and {MAX_POINTS}.")
     registered = players(conn, tournament)
     unknown = [p for p in nums if p not in registered]
     if unknown:
@@ -213,7 +217,7 @@ def validate_game(
     ).fetchone()
     if dup:
         raise ValidationError(
-            f"Table {table} already has a result for round {round_} - use Change to update it."
+            f"Table {table} already has a result for round {round_}."
         )
     for p in nums:
         other = conn.execute(

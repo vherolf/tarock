@@ -18,6 +18,7 @@ DATA_ROOT = Path(sys.executable).resolve().parent if FROZEN else REPO_ROOT
 
 TOURNAMENTS_DIR = DATA_ROOT / "tournaments"
 DEFAULT_DB = TOURNAMENTS_DIR / "tournaments.db"
+PUBLISHED_FILE = "published.txt"   # inside TOURNAMENTS_DIR: names the tournament shown on the website
 
 
 def sibling_program(name: str, script: str) -> list[str]:

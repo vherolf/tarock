@@ -12,7 +12,7 @@ import csv
 from pathlib import Path
 
 from . import csv_io, db, ranking
-from .html_export import PUBLISHED_FILE
+from .paths import PUBLISHED_FILE
 
 _HEADER = ["Rank", "Player_Number", "Player_Name", "Total_Points"]
 

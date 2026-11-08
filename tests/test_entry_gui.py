@@ -383,3 +383,77 @@ def test_export_html_preview_is_written(make_window, tmp_path, monkeypatch):
     win._on_export_html()
     assert (tmp_path / "docs" / "index.html").exists()
     assert "exported" in win.status_lbl.text()
+
+
+# --------------------------------------------------------- failed CSV export ----
+@pytest.fixture
+def failing_export(monkeypatch):
+    state = {"fail": True}
+    real = T.csv_io.export_tournament
+
+    def export(*args, **kwargs):
+        if state["fail"]:
+            raise OSError("disk full")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(T.csv_io, "export_tournament", export)
+    return state
+
+
+def test_failed_csv_export_is_not_reported_as_plain_success(make_window, failing_export):
+    """Regression: the error was wiped by the card redraw and the status just said 'Saved'."""
+    win = make_window()
+    fill(win, [1, 2, 3, 4], [0, 0, 0, 0], round_=2, table=1)
+    win._on_submit()
+    assert len(stored(win)) == 3                                  # the database write itself went through
+    text = win.status_lbl.text()
+    assert "Saved round 2, table 1" in text and "CSV export FAILED" in text and "disk full" in text
+    assert "red" in win.status_lbl.styleSheet()
+    assert "CSV EXPORT FAILED" in win.windowTitle()
+
+
+def test_failed_csv_export_stays_visible_after_navigating_and_clears_after_a_good_write(make_window, failing_export):
+    win = make_window()
+    fill(win, [1, 2, 3, 4], [0, 0, 0, 0], round_=2, table=1)
+    win._on_submit()
+    win._show_previous()                                          # redraws the card, clears the status line
+    assert "CSV EXPORT FAILED" in win.windowTitle()               # but the title still says so
+    failing_export["fail"] = False
+    fill(win, [1, 2, 3, 4], [0, 0, 0, 0], round_=3, table=1)
+    win._on_submit()
+    assert "CSV EXPORT FAILED" not in win.windowTitle()
+    assert "FAILED" not in win.status_lbl.text()
+    assert consistency.check_tournament_dir(win._export_dir) == []
+
+
+@pytest.mark.parametrize("action,expected", [
+    (lambda w: w._save_mapping(), "Mapping saved"),
+    (lambda w: w._delete_current(), "Deleted round 1, table 1"),
+    (lambda w: w._show_ranking(), "Ranking saved"),
+])
+def test_every_save_path_reports_a_failed_export(make_window, failing_export, action, expected):
+    win = make_window()
+    action(win)
+    assert expected in win.status_lbl.text() and "CSV export FAILED" in win.status_lbl.text()
+
+
+def test_html_preview_refuses_to_build_from_stale_csv_files(make_window, failing_export, tmp_path, monkeypatch):
+    win = make_window()
+    monkeypatch.setattr(T, "DATA_ROOT", tmp_path)
+    win._on_export_html()
+    assert not (tmp_path / "docs" / "index.html").exists()
+    assert "not exported" in win.status_lbl.text() and "disk full" in win.status_lbl.text()
+
+
+# ------------------------------------------------------------------ points limit ----
+def test_points_fields_accept_up_to_the_database_limit(make_window):
+    win = make_window()
+    assert all(b.minimum() == -db.MAX_POINTS and b.maximum() == db.MAX_POINTS for b in win.points_spins)
+    assert db.MAX_POINTS == 1000
+    fill(win, [1, 2, 3, 4], [300, -100, -100, -100], round_=2, table=1)        # a winner above the old +100 limit
+    win._on_submit()
+    assert stored(win)[-1].seats[0] == (1, 300)
+    fill(win, [5, 6, 7, 8], [1000, -1000, 0, 0], round_=2, table=2)
+    win._on_submit()
+    assert stored(win)[-1].seats[:2] == ((5, 1000), (6, -1000))
+    assert consistency.check_tournament_dir(win._export_dir) == []

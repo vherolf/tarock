@@ -82,6 +82,7 @@ class MainWindow(QWidget):
         font.setPointSize(18)
         self.setFont(font)
 
+        self._export_error: str | None = None   # why the last CSV export failed, if it did
         self.games: list[db.Game] = []
         self.current_index: int = -1
         self._form_key: tuple[int, int] | None = None  # (round, table) the form was last loaded for
@@ -213,7 +214,7 @@ class MainWindow(QWidget):
         for i in range(4):
             player_num_le = PlayerNumberSpin()
             points_sb = QSpinBox()
-            points_sb.setRange(-100, 100)
+            points_sb.setRange(-db.MAX_POINTS, db.MAX_POINTS)
             points_sb.setValue(0)
 
             name_lbl = QLabel()
@@ -298,7 +299,29 @@ class MainWindow(QWidget):
         try:
             csv_io.export_tournament(self._conn, self._tournament, self._export_dir)
         except OSError as exc:
-            self._set_status(f"Saved to database, but CSV export failed: {exc}", error=True)
+            self._set_export_error(str(exc))
+        else:
+            self._set_export_error(None)
+
+    def _set_export_error(self, error: str | None) -> None:
+        """Remember a failed CSV export. It stays visible in the window title until a later write succeeds."""
+        self._export_error = error
+        base = f"Tarock Data Entry - tournament {self._tournament}"
+        self.setWindowTitle(base if error is None else base + " - CSV EXPORT FAILED")
+
+    def _set_ok(self, text: str) -> None:
+        """Success message after a save - unless the CSV copy could not be written.
+
+        The CSV files are what gets committed and published, so a failed export must not look like success.
+        """
+        if self._export_error is None:
+            self._set_status(text)
+        else:
+            self._set_status(
+                f"{text} BUT the CSV export FAILED ({self._export_error}) - the CSV files are out of date. "
+                "Fix the problem and save again.",
+                error=True,
+            )
 
     def _report_problems(self) -> None:
         problems = db.check(self._conn, self._tournament)
@@ -354,7 +377,7 @@ class MainWindow(QWidget):
         self.mapping = mapping
         self._update_name_labels()
         self._after_write()
-        self._set_status(f"Mapping saved - {len(mapping)} players.")
+        self._set_ok(f"Mapping saved - {len(mapping)} players.")
 
     def _load_mapping(self) -> None:
         self.mapping = db.players(self._conn, self._tournament)
@@ -410,7 +433,7 @@ class MainWindow(QWidget):
         self.current_index = next(i for i, g in enumerate(self.games) if g.id == game_id)
         self._populate_form(self.games[self.current_index])
         self._display_current_card()
-        self._set_status(f"{'Updated' if existing else 'Saved'} round {round_}, table {table}.")
+        self._set_ok(f"{'Updated' if existing else 'Saved'} round {round_}, table {table}.")
 
     def _confirm_overwrite(self, existing: db.Game, new_seats: list[tuple[int, int]]) -> bool:
         """Warn that this round/table already has a result; True if the user wants to replace it."""
@@ -480,9 +503,10 @@ class MainWindow(QWidget):
         if not self.games:
             self.current_index = -1
             self._clear_fields()
-            self._set_status("All entries deleted.")
+            self._set_ok("All entries deleted.")
         else:
             self._select(min(self.current_index, len(self.games) - 1))
+            self._set_ok(f"Deleted round {game.round}, table {game.table}.")
 
     # ------------------------------------------------------------------
     def _display_current_card(self) -> None:
@@ -539,10 +563,15 @@ class MainWindow(QWidget):
             return
         self.output_display.setHtml(html_views.ranking_html(standings))
         self._after_write()
-        self._set_status(f"Ranking saved to {self._export_dir / 'ranking.csv'}.")
+        self._set_ok(f"Ranking saved to {self._export_dir / 'ranking.csv'}.")
 
     def _on_export_html(self) -> None:
         self._after_write()
+        if self._export_error is not None:       # the page is built from the CSV files: don't publish stale ones
+            self._set_status(
+                f"Results page not exported: the CSV files could not be written ({self._export_error}).", error=True
+            )
+            return
         out_path = DATA_ROOT / "docs" / "index.html"
         try:
             html_export.build(self._export_dir, out_path)

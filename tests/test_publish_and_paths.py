@@ -108,3 +108,14 @@ def test_paths_frozen_separate_resources_and_data(monkeypatch, tmp_path):
     assert p.DEFAULT_DB == exe_dir.resolve() / "tournaments" / "tournaments.db"
     assert p.sibling_program("presenter", "presenter.py") == [str(exe_dir.resolve() / "presenter")]
     reload_paths(monkeypatch, frozen=False)                # restore module state for other tests
+
+
+# ------------------------------------------------------------------- imports ----
+def test_data_check_needs_no_image_library():
+    """The consistency check runs in CI before anything else; it must not need qrcode (used only for the page)."""
+    import subprocess
+    code = ("import sys; sys.modules['qrcode'] = None; "
+            "import tarock_core.consistency, tarock_core.csv_io, tarock_core.ranking; print('ok')")
+    result = subprocess.run([sys.executable, "-c", code], cwd=Path(__file__).resolve().parent.parent,
+                            capture_output=True, text=True)
+    assert result.stdout.strip() == "ok", result.stderr

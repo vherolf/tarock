@@ -17,7 +17,7 @@ from pathlib import Path
 
 import qrcode
 
-from .paths import TOURNAMENTS_DIR, ordinal as _ordinal
+from .paths import PUBLISHED_FILE, TOURNAMENTS_DIR, ordinal as _ordinal
 
 PAGE_URL = "https://vherolf.github.io/tarock/"
 
@@ -34,8 +34,6 @@ def _qr_data_uri(url: str) -> str:
     encoded = base64.b64encode(buf.getvalue()).decode("ascii")
     return f"data:image/png;base64,{encoded}"
 
-
-PUBLISHED_FILE = "published.txt"
 
 
 def published_tournament(base: Path = TOURNAMENTS_DIR) -> Path:

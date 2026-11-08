@@ -190,3 +190,18 @@ def test_readonly_reader_sees_data_version_change(conn, tmp_path):
     db.save_game(conn, 1, 1, 1, seats(0, 0, 0, 0))
     assert ro.execute("PRAGMA data_version").fetchone()[0] != before
     assert len(db.games(ro, 1)) == 1
+
+
+# ----------------------------------------------------- limits and messages ----
+def test_points_limit_is_validated_with_a_friendly_message(conn):
+    db.save_game(conn, 1, 1, 1, seats(1000, -1000, 0, 0))                    # the limit itself is fine
+    with pytest.raises(db.ValidationError, match="between -1000 and 1000"):
+        db.save_game(conn, 1, 2, 1, seats(1001, -1001, 0, 0))
+    assert len(db.games(conn, 1)) == 1
+
+
+def test_duplicate_table_message_does_not_mention_a_removed_button(conn):
+    db.save_game(conn, 1, 1, 1, seats(0, 0, 0, 0))
+    with pytest.raises(db.ValidationError) as exc:
+        db.save_game(conn, 1, 1, 1, seats(0, 0, 0, 0, players=(5, 6, 7, 8)))
+    assert "already has a result" in str(exc.value) and "Change" not in str(exc.value)
