@@ -7,6 +7,11 @@ __pycache__/
 # in-app "Export HTML" button — not committed)
 /docs/
 
+# SQLite database (source of truth, local); CSV copies in tournaments/<N>/ are committed
+/tournaments/*.db
+/tournaments/*.db-wal
+/tournaments/*.db-shm
+
 # C extensions
 *.so
 

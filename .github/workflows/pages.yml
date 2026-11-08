@@ -6,6 +6,7 @@ on:
     paths:
       - "tournaments/**/ranking.csv"
       - "scripts/export_html.py"
+      - "tarock_core/**"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 

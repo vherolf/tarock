@@ -8,12 +8,19 @@ fi
 
 pip install pyinstaller --quiet
 
-pyinstaller \
-    --onefile \
-    --name tarock \
+# Data entry tool
+pyinstaller --onefile --name tarockmanager \
+    --collect-all tarock_core \
+    --add-data "scripts:scripts" \
+    tarockmanager.py
+
+# Presentation tool (needs the images folder for the Walter page)
+pyinstaller --onefile --name presenter \
     --hidden-import "matplotlib.backends.backend_qtagg" \
     --hidden-import "matplotlib.backends.backend_agg" \
     --collect-all matplotlib \
-    tarockmanager.py
+    --collect-all tarock_core \
+    --add-data "images:images" \
+    presenter.py
 
-echo "Done — binary: dist/tarock"
+echo "Done - binaries: dist/tarockmanager, dist/presenter"

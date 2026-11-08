@@ -15,10 +15,12 @@ import io
 from datetime import datetime
 from pathlib import Path
 
+import sys
+
 import qrcode
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-TOURNAMENTS_DIR = REPO_ROOT / "tournaments"
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from tarock_core.paths import REPO_ROOT, TOURNAMENTS_DIR, ordinal as _ordinal  # noqa: E402
 
 PAGE_URL = "https://vherolf.github.io/tarock/"
 
@@ -34,11 +36,6 @@ def _qr_data_uri(url: str) -> str:
     img.save(buf, format="PNG")
     encoded = base64.b64encode(buf.getvalue()).decode("ascii")
     return f"data:image/png;base64,{encoded}"
-
-
-def _ordinal(n: int) -> str:
-    suffix = "th" if 11 <= (n % 100) <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
-    return f"{n}{suffix}"
 
 
 def find_latest_tournament(base: Path = TOURNAMENTS_DIR) -> Path | None:

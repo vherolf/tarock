@@ -2,5 +2,6 @@ PyQt6==6.11.0
 matplotlib==3.10.9
 qrcode[pil]
 
-# build / packaging only
-cx_Freeze
+# tests / packaging only
+pytest
+pyinstaller
