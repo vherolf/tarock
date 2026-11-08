@@ -385,10 +385,11 @@ def test_export_html_preview_is_written(make_window, tmp_path, monkeypatch):
     assert "exported" in win.status_lbl.text()
 
 
-# --------------------------------------------------------- failed CSV export ----
+# ---------------------------------------------- CSV files are the master copy ----
 @pytest.fixture
 def failing_export(monkeypatch):
-    state = {"fail": True}
+    """Switchable disk failure for the CSV export. Starts working; set state['fail'] = True to break it."""
+    state = {"fail": False}
     real = T.csv_io.export_tournament
 
     def export(*args, **kwargs):
@@ -400,49 +401,169 @@ def failing_export(monkeypatch):
     return state
 
 
-def test_failed_csv_export_is_not_reported_as_plain_success(make_window, failing_export):
-    """Regression: the error was wiped by the card redraw and the status just said 'Saved'."""
+def csv_snapshot(win):
+    return {p.name: p.read_bytes() for p in win._export_dir.iterdir()}
+
+
+def test_failed_csv_write_means_nothing_is_saved(make_window, failing_export):
     win = make_window()
+    before, files = stored(win), csv_snapshot(win)
+    failing_export["fail"] = True
     fill(win, [1, 2, 3, 4], [0, 0, 0, 0], round_=2, table=1)
     win._on_submit()
-    assert len(stored(win)) == 3                                  # the database write itself went through
-    text = win.status_lbl.text()
-    assert "Saved round 2, table 1" in text and "CSV export FAILED" in text and "disk full" in text
+    assert "NOT saved" in win.status_lbl.text() and "disk full" in win.status_lbl.text()
     assert "red" in win.status_lbl.styleSheet()
-    assert "CSV EXPORT FAILED" in win.windowTitle()
+    assert stored(win) == before and len(win.games) == 2           # database rolled back, view unchanged
+    assert csv_snapshot(win) == files                              # CSV files untouched, no temp files left behind
 
 
-def test_failed_csv_export_stays_visible_after_navigating_and_clears_after_a_good_write(make_window, failing_export):
+def test_every_save_path_is_all_or_nothing(make_window, failing_export):
     win = make_window()
+    before, files = stored(win), csv_snapshot(win)
+    failing_export["fail"] = True
+    free = next(i for i, (n, _) in enumerate(win.mapping_edits) if not n.text())
+    win.mapping_edits[free][0].setText("9")
+    win.mapping_edits[free][1].setText("Newcomer")
+    win._save_mapping()
+    assert "NOT saved" in win.status_lbl.text() and 9 not in db.players(win._conn, 1)
+    win._delete_current()
+    assert "NOT saved" in win.status_lbl.text() and stored(win) == before
+    assert csv_snapshot(win) == files
+
+
+def test_saving_works_again_once_the_disk_problem_is_gone(make_window, failing_export):
+    win = make_window()
+    failing_export["fail"] = True
     fill(win, [1, 2, 3, 4], [0, 0, 0, 0], round_=2, table=1)
     win._on_submit()
-    win._show_previous()                                          # redraws the card, clears the status line
-    assert "CSV EXPORT FAILED" in win.windowTitle()               # but the title still says so
     failing_export["fail"] = False
-    fill(win, [1, 2, 3, 4], [0, 0, 0, 0], round_=3, table=1)
-    win._on_submit()
-    assert "CSV EXPORT FAILED" not in win.windowTitle()
-    assert "FAILED" not in win.status_lbl.text()
+    win._on_submit()                                               # same input again
+    assert "Saved round 2, table 1" in win.status_lbl.text() and len(stored(win)) == 3
     assert consistency.check_tournament_dir(win._export_dir) == []
 
 
-@pytest.mark.parametrize("action,expected", [
-    (lambda w: w._save_mapping(), "Mapping saved"),
-    (lambda w: w._delete_current(), "Deleted round 1, table 1"),
-    (lambda w: w._show_ranking(), "Ranking saved"),
-])
-def test_every_save_path_reports_a_failed_export(make_window, failing_export, action, expected):
+def test_ranking_button_and_html_preview_report_a_failed_csv_write(make_window, failing_export, tmp_path, monkeypatch):
     win = make_window()
-    action(win)
-    assert expected in win.status_lbl.text() and "CSV export FAILED" in win.status_lbl.text()
-
-
-def test_html_preview_refuses_to_build_from_stale_csv_files(make_window, failing_export, tmp_path, monkeypatch):
-    win = make_window()
+    failing_export["fail"] = True
+    win._show_ranking()
+    assert "could not be written" in win.status_lbl.text() and "Ranking" in win.output_display.toPlainText()
     monkeypatch.setattr(T, "DATA_ROOT", tmp_path)
     win._on_export_html()
-    assert not (tmp_path / "docs" / "index.html").exists()
+    assert not (tmp_path / "docs" / "index.html").exists()         # never built from stale CSV files
     assert "not exported" in win.status_lbl.text() and "disk full" in win.status_lbl.text()
+
+
+# ----------------------------------------------------------- start-up sync ----
+@pytest.fixture
+def csv_folder(tmp_path):
+    """tournaments/ with tournament 1's CSV files (2 games, 8 players) and NO database."""
+    seed = db.open_rw(tmp_path / "seed.db")
+    db.set_players(seed, 1, NAMES)
+    db.save_game(seed, 1, 1, 1, [(1, 5), (2, -5), (3, 0), (4, 0)])
+    db.save_game(seed, 1, 1, 2, [(5, 3), (6, -3), (7, 0), (8, 0)])
+    from tarock_core import csv_io
+    csv_io.export_tournament(seed, 1, tmp_path / "1")
+    seed.close()
+    for f in tmp_path.glob("seed.db*"):
+        f.unlink()
+    return tmp_path
+
+
+def test_deleted_database_is_rebuilt_on_start_and_saving_keeps_every_csv_game(app, csv_folder, dialogs):
+    """The motivating scenario: delete the database, restart. Used to ignore the CSVs and then overwrite them."""
+    before = {p.name: p.read_bytes() for p in (csv_folder / "1").iterdir()}
+    win = T.MainWindow(csv_folder / "tournaments.db", 1)
+    assert len(win.games) == 2 and len(win.mapping) == 8                       # the data is back
+    assert "rebuilt from the CSV files (2 games)" in win.status_lbl.text()
+    assert not [d for d in dialogs.shown if d[0] == "warning"]                 # nothing was replaced: no scary dialog
+    win._save_mapping()                                                        # a save used to wipe the CSV files...
+    fill(win, [1, 2, 3, 4], [4, -4, 0, 0], round_=2, table=1)
+    win._on_submit()
+    rows = (csv_folder / "1" / "result.csv").read_text().strip().splitlines()
+    assert len(rows) == 1 + 3                                                  # ...now: header + the 2 old games + the new one
+    assert rows[1:3] == before["result.csv"].decode().strip().splitlines()[1:]
+    win.close()
+
+
+def test_different_database_content_is_replaced_by_the_csv_files_after_a_backup(app, csv_folder, dialogs):
+    conn = db.open_rw(csv_folder / "tournaments.db")
+    db.set_players(conn, 1, {i: f"Other{i}" for i in range(1, 9)})
+    db.save_game(conn, 1, 7, 1, [(1, 9), (2, -9), (3, 0), (4, 0)])
+    conn.close()
+    win = T.MainWindow(csv_folder / "tournaments.db", 1)
+    assert win.mapping == NAMES and len(win.games) == 2                        # CSV wins
+    warning = next(d for d in dialogs.shown if d[0] == "warning")
+    backups = list((csv_folder / "backups").glob("tournaments-*.db"))
+    assert len(backups) == 1 and str(backups[0]) in warning[1]                 # the dialog says where the old database went
+    assert "master copy" in warning[1]
+    win.close()
+
+
+def test_unusable_csv_files_stop_the_start_and_change_nothing(app, csv_folder):
+    with open(csv_folder / "1" / "result.csv", "a") as f:
+        f.write("1,9,x,y,1,2,3\n")
+    before = {p.name: p.read_bytes() for p in (csv_folder / "1").iterdir()}
+    with pytest.raises(T.StartupError) as exc:
+        T.MainWindow(csv_folder / "tournaments.db", 1)
+    assert "line 4" in exc.value.message and "master copy" in exc.value.message
+    assert {p.name: p.read_bytes() for p in (csv_folder / "1").iterdir()} == before
+    conn = db.open_rw(csv_folder / "tournaments.db")
+    assert db.games(conn, 1) == [] and db.players(conn, 1) == {}               # database untouched too
+    conn.close()
+
+
+def test_half_present_csv_set_stops_the_start(app, csv_folder):
+    (csv_folder / "1" / "player_numbers.csv").unlink()
+    with pytest.raises(T.StartupError) as exc:
+        T.MainWindow(csv_folder / "tournaments.db", 1)
+    assert "player_numbers.csv is missing" in exc.value.message
+    assert (csv_folder / "1" / "result.csv").exists()                          # the survivor is not overwritten
+
+
+def test_database_without_csv_files_gets_them_on_start(app, tmp_path, dialogs):
+    path = tmp_path / "tournaments.db"
+    conn = db.open_rw(path)
+    db.set_players(conn, 1, NAMES)
+    db.save_game(conn, 1, 1, 1, [(1, 5), (2, -5), (3, 0), (4, 0)])
+    conn.close()
+    win = T.MainWindow(path, 1)
+    assert (tmp_path / "1" / "result.csv").exists() and "CSV files created" in win.status_lbl.text()
+    assert consistency.check_tournament_dir(tmp_path / "1") == []
+    win.close()
+
+
+def test_stale_ranking_csv_is_regenerated_on_start(app, csv_folder, dialogs):
+    (csv_folder / "1" / "ranking.csv").write_text("Rank,Player_Number,Player_Name,Total_Points\n1,1,Old,1\n")
+    win = T.MainWindow(csv_folder / "tournaments.db", 1)
+    assert "ranking.csv was out of date" in win.status_lbl.text()
+    assert consistency.check_tournament_dir(csv_folder / "1") == []
+    win.close()
+
+
+def test_csv_folder_that_cannot_be_written_at_start_is_a_warning(app, tmp_path, dialogs, failing_export):
+    path = tmp_path / "tournaments.db"
+    conn = db.open_rw(path)
+    db.set_players(conn, 1, NAMES)
+    conn.close()
+    failing_export["fail"] = True
+    win = T.MainWindow(path, 1)                                                # opens, but says so
+    assert "WARNING" in win.status_lbl.text() and "disk full" in win.status_lbl.text()
+    win.close()
+
+
+def test_default_tournament_also_considers_csv_only_folders(app, csv_folder):
+    (csv_folder / "5").mkdir()
+    for name in ("result.csv", "player_numbers.csv"):
+        (csv_folder / "5" / name).write_text("x\n")
+    assert T.default_tournament(csv_folder / "tournaments.db") == 5            # no database yet, CSV folders decide
+    conn = db.open_rw(csv_folder / "tournaments.db")
+    db.ensure_tournament(conn, 9)
+    conn.close()
+    assert T.default_tournament(csv_folder / "tournaments.db") == 9            # the database may know a newer one
+
+
+def test_default_tournament_without_anything_is_one(app, tmp_path):
+    assert T.default_tournament(tmp_path / "tournaments.db") == 1
 
 
 # ------------------------------------------------------------------ points limit ----

@@ -6,7 +6,6 @@ what is drawn by the page classes, what numbers are shown by `viewmodel` / `taro
 """
 from __future__ import annotations
 
-import random
 
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QKeySequence, QShortcut
@@ -16,7 +15,10 @@ from tarock_core import ranking
 
 from .automode import AutoMode, Cmd, Command, DEFAULT_CYCLE, Stage
 from .pages import ComparePage, NavBar, RankingPage, SplashPage, WalterPage
-from .viewmodel import View, build_view
+from .viewmodel import View, build_view, pick_compare_players
+
+# how long auto mode shows the comparison (before the speed factor); override with --compare-seconds
+AUTO_COMPARE_SECONDS = 20.0
 
 # stack indices
 SPLASH, RANKING, COMPARE, WALTER = 0, 1, 2, 3
@@ -25,7 +27,7 @@ FRAME_RANKING, FRAME_COMPARE = 0, 1
 
 
 class GraphWindow(QWidget):
-    AUTO_COMPARE_MS = 10_000
+    AUTO_COMPARE_MS = int(AUTO_COMPARE_SECONDS * 1_000)   # default length of the compare stage
 
     def __init__(
         self,
@@ -34,6 +36,7 @@ class GraphWindow(QWidget):
         auto_speed: float = 1.0,
         auto_resume_s: int = 180,
         auto_cycle: tuple[Stage, ...] = DEFAULT_CYCLE,
+        compare_seconds: float = AUTO_COMPARE_SECONDS,
     ) -> None:
         super().__init__()
         self._title = title
@@ -47,7 +50,7 @@ class GraphWindow(QWidget):
         self._logo_fade_in_ms = ms(2_000)
         self._logo_hold_ms = ms(2_000)
         self._logo_fade_out_ms = ms(1_000)
-        self._compare_ms = ms(self.AUTO_COMPARE_MS)
+        self._compare_ms = ms(int(compare_seconds * 1_000))
         self._walter_hold_ms = ms(3_000)
 
         self._standings = standings
@@ -182,8 +185,8 @@ class GraphWindow(QWidget):
                 self._logo_fade_in_ms, self._logo_hold_ms, self._logo_fade_out_ms, self._on_stage_finished
             )
         elif stage is Stage.COMPARE:
-            players = [p.pnum for p in self._view.players]
-            self._compare.set_selected(set(random.sample(players, min(2, len(players)))))
+            ranked = [p.pnum for p in self._view.players]
+            self._compare.set_selected(set(pick_compare_players(ranked)))
             self._frame = FRAME_COMPARE
             self._show_frame()
             self._stage_timer.start(self._compare_ms)

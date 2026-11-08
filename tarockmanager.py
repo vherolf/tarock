@@ -17,8 +17,9 @@ import argparse
 import subprocess
 import sys
 from pathlib import Path
+from typing import Callable, TypeVar
 
-from tarock_core import csv_io, db, html_export, html_views, ranking
+from tarock_core import csv_io, db, html_export, html_views, ranking, sync, testdata
 from tarock_core.paths import DATA_ROOT, DEFAULT_DB, ordinal, sibling_program
 
 from PyQt6.QtWidgets import (
@@ -40,6 +41,21 @@ from PyQt6.QtCore import Qt
 
 
 MIN_MAPPING_ROWS = 20   # rows in the mapping panel; it grows when a tournament has more players
+
+T = TypeVar("T")
+
+
+class StartupError(Exception):
+    """The tournament's CSV files are unusable, so the tool refuses to open it (the database is left untouched)."""
+
+    def __init__(self, tournament: int, csv_dir: Path, errors: list[str]) -> None:
+        shown = errors[:15] + ([f"... and {len(errors) - 15} more"] if len(errors) > 15 else [])
+        self.message = (
+            f"The CSV files of tournament {tournament} ({csv_dir}) cannot be used, so nothing was changed.\n"
+            "The CSV files are the master copy - fix these problems (or move the folder away) and start again:\n\n"
+            + "\n".join(f"  - {e}" for e in shown)
+        )
+        super().__init__(self.message)
 
 
 class PlayerNumberSpin(QSpinBox):
@@ -68,13 +84,19 @@ class PlayerNumberSpin(QSpinBox):
 
 
 class MainWindow(QWidget):
-    def __init__(self, db_path: Path, tournament: int) -> None:
+    def __init__(self, db_path: Path, tournament: int, notice: str | None = None) -> None:
         super().__init__()
+        self._notice = notice            # extra start-up message, e.g. 'test data regenerated'
         self._db_path = db_path
         self._tournament = tournament
-        self._conn = db.open_rw(db_path)
-        db.ensure_tournament(self._conn, tournament)
         self._export_dir = db_path.parent / str(tournament)
+        self._conn = db.open_rw(db_path)
+        # The CSV files are the master copy: make the database match them before anything is shown.
+        self._startup = sync.sync_tournament(self._conn, tournament, self._export_dir, db_path.parent / "backups")
+        if self._startup.action == "invalid":
+            self._conn.close()
+            raise StartupError(tournament, self._export_dir, self._startup.errors)
+        db.ensure_tournament(self._conn, tournament)
         self._tournament_title = f"{ordinal(tournament)} Pony Tarock Championship"
         self.setWindowTitle(f"Tarock Data Entry - tournament {tournament}")
 
@@ -82,7 +104,6 @@ class MainWindow(QWidget):
         font.setPointSize(18)
         self.setFont(font)
 
-        self._export_error: str | None = None   # why the last CSV export failed, if it did
         self.games: list[db.Game] = []
         self.current_index: int = -1
         self._form_key: tuple[int, int] | None = None  # (round, table) the form was last loaded for
@@ -95,6 +116,7 @@ class MainWindow(QWidget):
             self._populate_form(self.games[0])
             self._display_current_card()
         self._report_problems()
+        self._report_startup()
 
     def _build_ui(self) -> None:
         header = QLabel(self._tournament_title)
@@ -293,35 +315,53 @@ class MainWindow(QWidget):
     def _reload_games(self) -> None:
         self.games = db.games(self._conn, self._tournament)
 
-    def _after_write(self) -> None:
-        """Refresh state and the CSV copy. The ranking export is regenerated on every write."""
+    def _save(self, write: Callable[[], T]) -> T:
+        """Run a database write and the CSV export as ONE atomic step.
+
+        The CSV files are the master copy, so a change counts as saved only if they were written too.
+        If they cannot be written (disk full, read-only folder) the database change is rolled back and
+        nothing is saved - the two can never disagree. Raises db.ValidationError with a user-facing message.
+        """
+        try:
+            with db.transaction(self._conn):
+                result = write()
+                csv_io.export_tournament(self._conn, self._tournament, self._export_dir)
+        except OSError as exc:
+            raise db.ValidationError(f"NOT saved - the CSV files could not be written: {exc}") from exc
         self._reload_games()
+        return result
+
+    def _export_csv(self) -> str | None:
+        """Rewrite the CSV files from the database (no data change). Returns an error text on failure."""
         try:
             csv_io.export_tournament(self._conn, self._tournament, self._export_dir)
         except OSError as exc:
-            self._set_export_error(str(exc))
-        else:
-            self._set_export_error(None)
+            return str(exc)
+        return None
 
-    def _set_export_error(self, error: str | None) -> None:
-        """Remember a failed CSV export. It stays visible in the window title until a later write succeeds."""
-        self._export_error = error
-        base = f"Tarock Data Entry - tournament {self._tournament}"
-        self.setWindowTitle(base if error is None else base + " - CSV EXPORT FAILED")
-
-    def _set_ok(self, text: str) -> None:
-        """Success message after a save - unless the CSV copy could not be written.
-
-        The CSV files are what gets committed and published, so a failed export must not look like success.
-        """
-        if self._export_error is None:
-            self._set_status(text)
-        else:
-            self._set_status(
-                f"{text} BUT the CSV export FAILED ({self._export_error}) - the CSV files are out of date. "
-                "Fix the problem and save again.",
-                error=True,
+    def _report_startup(self) -> None:
+        """Tell the user what the start-up synchronisation with the CSV files did."""
+        result = self._startup
+        notes = []
+        if result.action == "rebuilt":
+            notes.append(f"Database rebuilt from the CSV files ({result.games} games).")
+        elif result.action == "exported":
+            notes.append("CSV files created from the database (there were none yet).")
+        if result.ranking_refreshed:
+            notes.append("ranking.csv was out of date and has been regenerated.")
+        if result.replaced_data:
+            QMessageBox.warning(
+                self, "Database replaced from the CSV files",
+                f"The database held different data for tournament {self._tournament} than its CSV files.\n"
+                "The CSV files are the master copy and have replaced it.\n\n"
+                f"The old database was saved to:\n{result.backup}",
             )
+        if self._notice:
+            notes.append(self._notice)
+        if result.warnings:
+            self._set_status(" ".join(notes + [f"WARNING: {w}" for w in result.warnings]), error=True)
+        elif notes:
+            self._set_status(" ".join(notes))
 
     def _report_problems(self) -> None:
         problems = db.check(self._conn, self._tournament)
@@ -370,14 +410,13 @@ class MainWindow(QWidget):
         if mapping is None:
             return
         try:
-            db.set_players(self._conn, self._tournament, mapping)
+            self._save(lambda: db.set_players(self._conn, self._tournament, mapping))
         except db.ValidationError as exc:
             self._set_status(str(exc), error=True)
             return
         self.mapping = mapping
         self._update_name_labels()
-        self._after_write()
-        self._set_ok(f"Mapping saved - {len(mapping)} players.")
+        self._set_status(f"Mapping saved - {len(mapping)} players.")
 
     def _load_mapping(self) -> None:
         self.mapping = db.players(self._conn, self._tournament)
@@ -422,18 +461,17 @@ class MainWindow(QWidget):
             self._set_status("Not saved - the existing result was kept.")
             return
         try:
-            game_id = db.save_game(
+            game_id = self._save(lambda: db.save_game(
                 self._conn, self._tournament, *form,
                 game_id=existing.id if existing else None,
-            )
+            ))
         except db.ValidationError as exc:
             self._set_status(str(exc), error=True)
             return
-        self._after_write()
         self.current_index = next(i for i, g in enumerate(self.games) if g.id == game_id)
         self._populate_form(self.games[self.current_index])
         self._display_current_card()
-        self._set_ok(f"{'Updated' if existing else 'Saved'} round {round_}, table {table}.")
+        self._set_status(f"{'Updated' if existing else 'Saved'} round {round_}, table {table}.")
 
     def _confirm_overwrite(self, existing: db.Game, new_seats: list[tuple[int, int]]) -> bool:
         """Warn that this round/table already has a result; True if the user wants to replace it."""
@@ -498,15 +536,18 @@ class MainWindow(QWidget):
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
-        db.delete_game(self._conn, game.id)
-        self._after_write()
+        try:
+            self._save(lambda: db.delete_game(self._conn, game.id))
+        except db.ValidationError as exc:
+            self._set_status(str(exc), error=True)
+            return
         if not self.games:
             self.current_index = -1
             self._clear_fields()
-            self._set_ok("All entries deleted.")
+            self._set_status("All entries deleted.")
         else:
             self._select(min(self.current_index, len(self.games) - 1))
-            self._set_ok(f"Deleted round {game.round}, table {game.table}.")
+            self._set_status(f"Deleted round {game.round}, table {game.table}.")
 
     # ------------------------------------------------------------------
     def _display_current_card(self) -> None:
@@ -562,15 +603,16 @@ class MainWindow(QWidget):
             self._set_status("No entries to rank.", error=True)
             return
         self.output_display.setHtml(html_views.ranking_html(standings))
-        self._after_write()
-        self._set_ok(f"Ranking saved to {self._export_dir / 'ranking.csv'}.")
+        error = self._export_csv()
+        if error:
+            self._set_status(f"Ranking shown, but the CSV files could not be written: {error}", error=True)
+        else:
+            self._set_status(f"Ranking saved to {self._export_dir / 'ranking.csv'}.")
 
     def _on_export_html(self) -> None:
-        self._after_write()
-        if self._export_error is not None:       # the page is built from the CSV files: don't publish stale ones
-            self._set_status(
-                f"Results page not exported: the CSV files could not be written ({self._export_error}).", error=True
-            )
+        error = self._export_csv()
+        if error:                                 # the page is built from the CSV files: never from stale ones
+            self._set_status(f"Results page not exported: the CSV files could not be written ({error}).", error=True)
             return
         out_path = DATA_ROOT / "docs" / "index.html"
         try:
@@ -594,27 +636,65 @@ class MainWindow(QWidget):
 
 
 # ----------------------------------------------------------------------
-def main() -> None:
+def default_tournament(db_path: Path) -> int:
+    """The latest tournament - in the database or only as CSV files (e.g. after deleting the database)."""
+    conn = db.open_rw(db_path)
+    try:
+        found = sync.available_tournaments(conn, db_path.parent)
+    finally:
+        conn.close()
+    return found[-1] if found else 1
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Tarock data-entry tool")
     parser.add_argument("--db", type=Path, default=DEFAULT_DB, help="SQLite database (default: %(default)s)")
     parser.add_argument(
         "--tournament", "-t", type=int, default=None, metavar="N",
         help="Tournament number to open (created if new). Opens the latest if omitted.",
     )
-    args, qt_args = parser.parse_known_args()
+    parser.add_argument(
+        "--no-test-data", action="store_true",
+        help="Do not regenerate the test tournaments 0 (14 players) and 1 (16 players) at start-up.",
+    )
+    parser.add_argument(
+        "--test-seed", type=int, default=None, metavar="N",
+        help="Seed for the generated test data (default: random). The seed is printed, so a data set can be reproduced.",
+    )
+    return parser
 
-    tournament = args.tournament
-    if tournament is None:
-        conn = db.open_rw(args.db)
-        tournament = db.latest_tournament(conn) or 1
-        conn.close()
+
+def refresh_test_data(args: argparse.Namespace) -> str | None:
+    """Regenerate the test tournaments unless disabled. Returns a message for the user, or None."""
+    if args.no_test_data:
+        return None
+    seed = testdata.refresh(args.db, args.test_seed)
+    return f"Test tournaments 0 and 1 regenerated (seed {seed})."
+
+
+def main() -> None:
+    args, qt_args = build_parser().parse_known_args()
+
+    notice = refresh_test_data(args)
+    if notice:
+        print(notice, flush=True)
+
+    tournament = args.tournament if args.tournament is not None else default_tournament(args.db)
 
     app = QApplication([sys.argv[0]] + qt_args)
     app.setFont(QFont("Noto Serif"))
-    win = MainWindow(args.db, tournament)
+    try:
+        win = MainWindow(args.db, tournament, notice if tournament in testdata_numbers() else None)
+    except StartupError as exc:
+        QMessageBox.critical(None, "Cannot open tournament", exc.message)
+        sys.exit(1)
     win.resize(1000, 600)
     win.show()
     sys.exit(app.exec())
+
+
+def testdata_numbers() -> set[int]:
+    return {number for number, _ in testdata.TEST_TOURNAMENTS}
 
 
 if __name__ == "__main__":

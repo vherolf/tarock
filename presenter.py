@@ -20,11 +20,11 @@ from PyQt6.QtCore import QTimer
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
-from tarock_core import db, ranking
+from tarock_core import db, ranking, sync
 from tarock_core.paths import DEFAULT_DB, ordinal
 from tarock_presenter.automode import DEFAULT_CYCLE, Stage
 from tarock_presenter.pages import MATPLOTLIB_OK
-from tarock_presenter.window import GraphWindow
+from tarock_presenter.window import AUTO_COMPARE_SECONDS, GraphWindow
 
 
 # ----------------------------------------------------------------------
@@ -35,15 +35,54 @@ def read_standings(conn, tournament: int) -> tuple[ranking.Standings, list[str]]
 
 
 def open_source(db_path: Path, tournament: int | None):
-    """Open the database read-only. Returns (connection, tournament number)."""
+    """Open the database read-only. Returns (connection, tournament number).
+
+    The presenter never writes - not even to rebuild a missing database. The data-entry tool does that
+    (it rebuilds the database from the CSV files), so a missing database is reported with that hint.
+    """
+    if not db_path.exists():
+        raise SystemExit(
+            f"Database not found: {db_path}\n"
+            "The database is rebuilt from the CSV files in tournaments/ by the data-entry tool.\n"
+            "Start it once (python tarockmanager.py), then start the presenter again."
+        )
     conn = db.open_ro(db_path)
     if tournament is None:
         tournament = db.latest_tournament(conn)
         if tournament is None:
-            raise SystemExit(f"No tournaments in {db_path}. Use the data-entry tool first.")
+            raise SystemExit(
+                f"The database {db_path} has no tournaments.\n"
+                "Start the data-entry tool once (python tarockmanager.py) - it rebuilds the database from the CSV files."
+            )
     elif tournament not in db.tournaments(conn):
-        raise SystemExit(f"Tournament {tournament} not found in {db_path}.")
+        csv_dir = db_path.parent / str(tournament)
+        if sync.csv_files_present(csv_dir):
+            raise SystemExit(
+                f"Tournament {tournament} is not in the database yet, but its CSV files exist ({csv_dir}).\n"
+                f"Start the data-entry tool with `-t {tournament}` - it rebuilds the database from them - "
+                "then start the presenter again."
+            )
+        raise SystemExit(f"Tournament {tournament} not found in {db_path} (and there is no {csv_dir}).")
     return conn, tournament
+
+
+def csv_warning(conn, tournament: int, csv_dir: Path) -> str | None:
+    """Read-only check: do the CSV files (the master copy) match the database this window shows?"""
+    status, errors = sync.check(conn, tournament, csv_dir)
+    if status == "differs":
+        return (
+            f"The CSV files of tournament {tournament} differ from the database (changed outside the program, "
+            "for example by a git pull?).\nThis window shows the database.\n\n"
+            "Start the data-entry tool for this tournament to rebuild the database from the CSV files, "
+            "then restart the presenter."
+        )
+    if status == "invalid":
+        return (
+            f"The CSV files of tournament {tournament} cannot be used:\n\n"
+            + "\n".join(f"  - {e}" for e in errors[:10])
+            + "\n\nThis window shows the database."
+        )
+    return None
 
 
 class LiveUpdater:
@@ -83,7 +122,17 @@ class LiveUpdater:
         self._window.update_standings(standings)
 
 
-def main() -> None:
+def positive_seconds(text: str) -> float:
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a number") from None
+    if value <= 0:
+        raise argparse.ArgumentTypeError("must be greater than 0")
+    return value
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Tarock presentation window (read-only)")
     parser.add_argument("--db", type=Path, default=DEFAULT_DB, help="SQLite database (default: %(default)s)")
     parser.add_argument(
@@ -105,7 +154,16 @@ def main() -> None:
         help="Comma-separated stages auto mode cycles through, from: "
              + ", ".join(s.value for s in Stage) + " (default: %(default)s).",
     )
-    args, qt_args = parser.parse_known_args()
+    parser.add_argument(
+        "--compare-seconds", type=positive_seconds, default=AUTO_COMPARE_SECONDS, metavar="SEC",
+        help="How long auto mode shows the player comparison, in seconds (default: %(default)g). "
+             "Like every auto-mode time it is multiplied by --speed-auto-mode.",
+    )
+    return parser
+
+
+def main() -> None:
+    args, qt_args = build_parser().parse_known_args()
 
     if not MATPLOTLIB_OK:
         raise SystemExit("matplotlib is required:  pip install matplotlib")
@@ -118,6 +176,7 @@ def main() -> None:
 
     conn, tournament = open_source(args.db, args.tournament)
     standings, problems = read_standings(conn, tournament)
+    stale = csv_warning(conn, tournament, args.db.parent / str(tournament))
     if not standings.rows:
         print(f"Tournament {tournament} has no results yet - showing an empty presentation.")
 
@@ -128,12 +187,15 @@ def main() -> None:
             None, "Data problems found",
             "The database has inconsistencies; the shown ranking may be wrong:\n\n" + "\n".join(problems),
         )
+    if stale:
+        QMessageBox.warning(None, "CSV files and database differ", stale)
     win = GraphWindow(
         standings,
         title=f"{ordinal(tournament)} Pony Tarock Championship",
         auto_speed=args.auto_speed,
         auto_resume_s=args.auto_resume_s,
         auto_cycle=cycle,
+        compare_seconds=args.compare_seconds,
     )
     win.show()
     updater = LiveUpdater(conn, tournament, win)  # noqa: F841 - kept alive for the timer

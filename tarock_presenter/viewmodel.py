@@ -1,6 +1,7 @@
 """Display data for the presentation, derived from the standings - pure, no Qt."""
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass
 
 from tarock_core import ranking
@@ -31,6 +32,23 @@ class PlayerView:
 class View:
     rounds: tuple[int, ...]
     players: tuple[PlayerView, ...]   # in ranking order
+
+
+COMPARE_SIZE = 3   # players shown together in auto mode: one winner as anchor + two random others
+ANCHORS = 3        # the anchor is one of the top 3
+
+
+def pick_compare_players(ranked: list[str], rng=random) -> list[str]:
+    """The players auto mode compares: one of the winners (top 3) as anchor, plus two random others.
+
+    `ranked` is in ranking order. The anchor is never taken from the bottom of the table. The two others
+    are drawn from everybody except the anchor. With 3 or fewer players all are shown.
+    """
+    if len(ranked) <= COMPARE_SIZE:
+        return list(ranked)
+    anchor = rng.choice(ranked[:ANCHORS])
+    others = rng.sample([p for p in ranked if p != anchor], COMPARE_SIZE - 1)
+    return [anchor, *others]
 
 
 def assign_colors(order: list[str], previous: dict[str, str] | None = None) -> dict[str, str]:

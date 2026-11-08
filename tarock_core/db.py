@@ -10,6 +10,7 @@ cannot get in even through a bug.
 from __future__ import annotations
 
 import sqlite3
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -84,7 +85,7 @@ def open_rw(path: Path) -> sqlite3.Connection:
     conn = _connect(str(path), uri=False)
     version = conn.execute("PRAGMA user_version").fetchone()[0]
     if version == 0:
-        with conn:
+        with _atomic(conn):
             conn.executescript(SCHEMA)
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     elif version != SCHEMA_VERSION:
@@ -104,6 +105,35 @@ def open_ro(path: Path) -> sqlite3.Connection:
     return conn
 
 
+# ------------------------------------------------------------ transactions --
+@contextmanager
+def transaction(conn: sqlite3.Connection):
+    """Group several writes (and anything done alongside them) into ONE atomic step.
+
+    Takes the write lock up front, commits when the block ends, rolls everything back if it raises.
+    Used by the data-entry tool so a database change and its CSV export succeed or fail together.
+    """
+    if conn.in_transaction:
+        raise RuntimeError("transactions cannot be nested")
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        yield
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+    conn.execute("COMMIT")
+
+
+@contextmanager
+def _atomic(conn: sqlite3.Connection):
+    """Commit-or-rollback around one write - unless a surrounding `transaction` owns the commit."""
+    if conn.in_transaction:
+        yield
+    else:
+        with conn:
+            yield
+
+
 # ---------------------------------------------------------------- queries --
 def tournaments(conn: sqlite3.Connection) -> list[int]:
     return [r[0] for r in conn.execute("SELECT number FROM tournament ORDER BY number")]
@@ -115,7 +145,7 @@ def latest_tournament(conn: sqlite3.Connection) -> int | None:
 
 
 def ensure_tournament(conn: sqlite3.Connection, number: int) -> None:
-    with conn:
+    with _atomic(conn):
         conn.execute("INSERT OR IGNORE INTO tournament(number) VALUES (?)", (number,))
 
 
@@ -154,7 +184,7 @@ def set_players(conn: sqlite3.Connection, tournament: int, mapping: dict[int, st
             raise ValidationError(f"Player number {num} is out of range (0-9999).")
     ensure_tournament(conn, tournament)
     try:
-        with conn:
+        with _atomic(conn):
             # rename in two phases so swapping names never trips the UNIQUE constraint
             existing = players(conn, tournament)
             for num in existing:
@@ -242,7 +272,7 @@ def save_game(
     """Insert (game_id=None) or replace a game atomically; returns its id."""
     validate_game(conn, tournament, round_, table, seats, game_id)
     try:
-        with conn:
+        with _atomic(conn):
             if game_id is None:
                 cur = conn.execute(
                     "INSERT INTO game(tournament, round, table_no) VALUES (?,?,?)",
@@ -269,7 +299,7 @@ def save_game(
 
 
 def delete_game(conn: sqlite3.Connection, game_id: int) -> None:
-    with conn:
+    with _atomic(conn):
         conn.execute("DELETE FROM game WHERE id = ?", (game_id,))
 
 

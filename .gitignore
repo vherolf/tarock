@@ -214,3 +214,10 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Test tournaments 0 and 1: regenerated at every start of tarockmanager.py (see tarock_core/testdata.py)
+/tournaments/0/
+/tournaments/1/
+
+# SQLite backups made when the CSV files replace different database content
+/tournaments/backups/

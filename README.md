@@ -30,7 +30,8 @@ pip install -r requirements.txt
 
 ## Architecture
 
-Two separate programs share one SQLite database (`tournaments/tournaments.db`):
+Two separate programs share one SQLite database (`tournaments/tournaments.db`), which is a **working copy** of the
+CSV files in `tournaments/<N>/`:
 
 | Program | Role | Database access |
 |---|---|---|
@@ -38,14 +39,31 @@ Two separate programs share one SQLite database (`tournaments/tournaments.db`):
 | `presenter.py` + `tarock_presenter/` | Animated results presentation (entry point + window code) | **read-only** (SQLite rejects any write) |
 | `tarock_core/` | Shared, Qt-free code: schema + validation (`db.py`), ranking rules (`ranking.py`), CSV import/export (`csv_io.py`), HTML export, the entry tool's HTML views (`html_views.py`), consistency check | - |
 
-The database is the single source of truth. It is local and gitignored. After every change the entry tool also writes
-`result.csv`, `player_numbers.csv` and `ranking.csv` to `tournaments/<N>/` (derived copies, committed for the GitHub Pages site).
-`ranking.csv` is regenerated on every save, so it cannot be stale.
+### The CSV files are the master copy
+`tournaments/<N>/result.csv` and `player_numbers.csv` are the truth: readable, versioned in git, and portable between
+machines. The SQLite database enforces the rules and feeds the presenter live, but it can be **deleted at any time** - it is
+rebuilt from the CSV files. `ranking.csv` is derived (always recomputed) and never read back as data.
+
+- **Every save writes both, as one step.** The database change and the CSV export happen in one transaction. If the CSV files
+  cannot be written (disk full, read-only folder) the change is rolled back and the status says "NOT saved" - the two can never disagree.
+- **On start, the data-entry tool synchronises the tournament it opens:**
+  - database missing, empty or without that tournament -> it is rebuilt from the CSV files;
+  - database holds *different* data -> the CSV files win; the whole database is first copied to `tournaments/backups/`
+    (the newest 20 are kept) and a dialog tells you where;
+  - database already matches -> nothing is written;
+  - no CSV files yet but the database has data -> the CSV files are created from it;
+  - CSV files unreadable or breaking a rule, or only one of the two data files exists -> the tool refuses to open that
+    tournament, lists the problems and changes nothing (so a broken file is never overwritten by the next save);
+  - a stale `ranking.csv` is regenerated (it is derived data).
+- **The presenter never writes.** With no database it stops with a message telling you to start the data-entry tool once
+  (which rebuilds it). If the CSV files differ from the database it shows a warning. `python scripts/rebuild_db.py`
+  rebuilds all tournaments at once (`--dry-run` only reports).
+- **Commit the CSV files** - they are the only copy that is backed up. (The database and `tournaments/backups/` are gitignored.)
 
 ### Data integrity
 - Only registered players can score, a player sits at one table per round, a table is used once per round, every game has exactly 4 players and its points sum to 0. These are checked in the app *and* enforced by the schema (foreign keys, UNIQUE, CHECK).
 - Every write is one transaction: a rejected change leaves the old data untouched.
-- Both tools audit the data on start-up and warn about inconsistencies.
+- The tools audit the data on start-up and warn about inconsistencies; CI checks the committed CSV files before publishing.
 
 ### Ranking rules (`tarock_core/ranking.py`)
 1. Total points. 2. Most table wins (highest score at a table in a round; shared top score = a win each). 3. Best single-round score.
@@ -68,16 +86,32 @@ The presentation also accepts:
 |---|---|---|---|
 | `--speed-auto-mode X` | `-s` | `1.0` | Auto-mode speed multiplier. `0.5` is twice as fast, `2.0` twice as slow. |
 | `--auto-resume SEC` | `-r` | `180` | Seconds of inactivity on the compare page before auto mode resumes. |
+| `--compare-seconds SEC` | | `20` | How long auto mode shows the player comparison. Multiplied by `--speed-auto-mode` like every auto-mode time. |
 | `--auto-stages LIST` | | `logo,compare` | Stages auto mode cycles through, from `logo`, `walter`, `compare` (e.g. `logo,walter,compare`). |
 
 The presentation updates live: it polls the database (about once a second) and rebuilds the ranking and compare pages when the entry tool saves, keeping the current page, the revealed rows and the selected players. It never writes to the database.
 
-### Importing legacy CSV data
+### Test tournaments 0 and 1
+
+Every start of `tarockmanager.py` regenerates two throw-away tournaments, so there is always fresh data to try things out on:
+**tournament 0** (14 players, 3 tables per round, 2 players sit out each round) and **tournament 1** (16 players, 4 tables), 6 rounds each.
+Whatever you deleted or changed in them while testing is gone at the next start. Open them with `-t 0` / `-t 1`.
+
+| Argument | Description |
+|---|---|
+| `--no-test-data` | Do not regenerate them (e.g. to keep what you did in them). |
+| `--test-seed N` | Use this seed instead of a random one. The seed is printed at start-up, so a data set can be reproduced. |
+
+The generated folders `tournaments/0/` and `tournaments/1/` are gitignored and never published. Other tournaments are never touched.
+The presenter does not generate anything (it is read-only) - start the data-entry tool once to create them.
+
+### Rebuilding the database from the CSV files
 
 ```bash
-python scripts/import_csv.py [N ...] [--compare]
+python scripts/rebuild_db.py [N ...] [--dry-run]
 ```
-Validates every row and imports each tournament all-or-nothing. Invalid rows are listed, never skipped silently.
+Use it after deleting the database or after a `git clone` / `git pull`. A tournament whose database content differs is replaced
+by its CSV files (after a backup); invalid CSV files are listed and change nothing.
 
 ### Tests
 
@@ -136,7 +170,7 @@ Every page has **Logo**, **Compare**, and **Ranking** buttons in the header bar.
 Auto mode cycles through its stages continuously. By default these are two (change them with `--auto-stages`):
 
 1. **Logo** — the "Café Pony" title fades in and out.
-2. **Compare** — two players are selected at random and shown on the comparison graph.
+2. **Compare** — three players are shown on the comparison graph: one of the winners (ranks 1-3) as the anchor plus two other players chosen at random. It stays for 20 seconds by default (`--compare-seconds`, scaled by `--speed-auto-mode`).
 
 The optional **Walter** stage shows the Walter advert and then wipes it away with a pixel-trickle effect
 (`--auto-stages logo,walter,compare`). The advert is always available manually with the `W` key.

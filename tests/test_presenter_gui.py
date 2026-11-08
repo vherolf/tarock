@@ -21,6 +21,10 @@ from tarock_presenter.window import COMPARE, RANKING, SPLASH, WALTER, GraphWindo
 
 NAMES = {i: f"Player{i}" for i in range(1, 9)}
 
+# auto-mode speed that makes the compare stage last 0.5 s, whatever the default duration is
+# (every other stage is clamped to its 0.1 s minimum at this speed)
+FAST = 500 / GraphWindow.AUTO_COMPARE_MS
+
 
 def make_standings(n_games: int = 4):
     games = [
@@ -130,7 +134,7 @@ def test_compare_selection_toggles(make_window):
 
 # ------------------------------------------------------------------- auto mode
 def test_auto_mode_alternates_logo_and_compare_and_stops(make_window):
-    win = make_window(auto_speed=0.05)
+    win = make_window(auto_speed=FAST)
     key(win, Qt.Key.Key_A)
     seq = page_changes(win, 1800)
     assert seq[:4] == [COMPARE, SPLASH, COMPARE, SPLASH]
@@ -141,14 +145,14 @@ def test_auto_mode_alternates_logo_and_compare_and_stops(make_window):
 
 
 def test_auto_mode_with_walter_stage(make_window):
-    win = make_window(auto_speed=0.05, auto_cycle=(Stage.LOGO, Stage.WALTER, Stage.COMPARE))
+    win = make_window(auto_speed=FAST, auto_cycle=(Stage.LOGO, Stage.WALTER, Stage.COMPARE))
     key(win, Qt.Key.Key_A)
     seq = page_changes(win, 3500)
     assert seq[:3] == [WALTER, COMPARE, SPLASH]
 
 
 def test_user_navigation_stops_auto_mode(make_window):
-    win = make_window(auto_speed=0.05)
+    win = make_window(auto_speed=FAST)
     key(win, Qt.Key.Key_A)
     spin(200)
     QTest.mouseClick(button(win, "Compare"), Qt.MouseButton.LeftButton)
@@ -158,7 +162,7 @@ def test_user_navigation_stops_auto_mode(make_window):
 
 
 def test_compare_interaction_resumes_auto_mode_later(make_window):
-    win = make_window(auto_speed=0.05, auto_resume_s=1)
+    win = make_window(auto_speed=FAST, auto_resume_s=1)
     key(win, Qt.Key.Key_A)
     spin(100)
     QTest.mouseClick(button(win, "Compare"), Qt.MouseButton.LeftButton)
@@ -171,7 +175,7 @@ def test_compare_interaction_resumes_auto_mode_later(make_window):
 
 
 def test_walter_key_stops_auto_mode(make_window):
-    win = make_window(auto_speed=0.05)
+    win = make_window(auto_speed=FAST)
     key(win, Qt.Key.Key_A)
     spin(150)
     key(win, Qt.Key.Key_W)
@@ -228,7 +232,7 @@ def test_identical_standings_do_not_rebuild_pages(make_window):
 
 
 def test_live_update_keeps_auto_button_state(make_window):
-    win = make_window(auto_speed=0.05)
+    win = make_window(auto_speed=FAST)
     key(win, Qt.Key.Key_A)
     win.update_standings(make_standings(n_games=3))
     assert any(b.text() == "Pause" for b in win._ranking.findChildren(QPushButton))
@@ -241,3 +245,19 @@ def test_empty_tournament_is_shown_without_errors(make_window):
         key(win, k)
     win.update_standings(make_standings())
     assert win._ranking.count == len(NAMES)
+
+
+def test_auto_compare_shows_three_players_with_a_winner_as_anchor(make_window):
+    win = make_window()
+    winners = {p.pnum for p in win._view.players[:3]}
+    for _ in range(12):
+        win._show_stage(Stage.COMPARE)
+        shown = win._compare.selected
+        assert len(shown) == 3 and shown & winners          # always at least one of ranks 1-3 on the chart
+
+
+def test_auto_compare_with_a_tiny_tournament_shows_everyone(make_window):
+    games = [db.Game(1, 1, 1, ((1, 5), (2, -5), (3, 0), (4, 0)))]
+    win = make_window(standings=ranking.compute(games, NAMES))
+    win._show_stage(Stage.COMPARE)
+    assert len(win._compare.selected) == 3

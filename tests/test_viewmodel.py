@@ -1,4 +1,5 @@
 import math
+import random
 import sys
 from pathlib import Path
 
@@ -84,3 +85,36 @@ def test_sixteen_and_twenty_players_all_get_different_colors():
     for n in (16, 20, 24):
         colors = viewmodel.assign_colors([str(i) for i in range(1, n + 1)])
         assert len(set(colors.values())) == n
+
+
+# ------------------------------------------------------- auto-mode comparison ----
+PLAYERS = [str(i) for i in range(1, 17)]            # ranking order: "1" is the winner, "16" the last
+
+
+def test_compare_picks_three_distinct_players():
+    for seed in range(50):
+        picked = viewmodel.pick_compare_players(PLAYERS, random.Random(seed))
+        assert len(picked) == viewmodel.COMPARE_SIZE == 3 and len(set(picked)) == 3
+
+
+def test_the_anchor_is_always_one_of_the_top_three_never_a_last_place():
+    anchors = {viewmodel.pick_compare_players(PLAYERS, random.Random(seed))[0] for seed in range(300)}
+    assert anchors == {"1", "2", "3"}                 # all three winners get their turn, nobody else is ever the anchor
+
+
+def test_the_two_random_players_can_be_anyone_but_the_anchor_and_never_repeat():
+    rng = random.Random(1)
+    others = set()
+    for _ in range(600):
+        anchor, a, b = viewmodel.pick_compare_players(PLAYERS, rng)
+        assert anchor not in (a, b) and a != b
+        others |= {a, b}
+    assert others == set(PLAYERS)
+
+
+def test_small_tournaments_show_everyone():
+    assert viewmodel.pick_compare_players(["1", "2", "3"]) == ["1", "2", "3"]
+    assert viewmodel.pick_compare_players(["1"]) == ["1"]
+    assert viewmodel.pick_compare_players([]) == []
+    four = viewmodel.pick_compare_players(["1", "2", "3", "4"], random.Random(0))
+    assert len(four) == 3 and four[0] in ("1", "2", "3")
