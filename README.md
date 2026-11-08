@@ -36,7 +36,7 @@ Two separate programs share one SQLite database (`tournaments/tournaments.db`):
 |---|---|---|
 | `tarockmanager.py` | Data entry: players, table results, ranking view | read / write |
 | `presenter.py` + `tarock_presenter/` | Animated results presentation (entry point + window code) | **read-only** (SQLite rejects any write) |
-| `tarock_core/` | Shared, Qt-free code: schema + validation (`db.py`), ranking rules (`ranking.py`), CSV import/export (`csv_io.py`), HTML export, consistency check | - |
+| `tarock_core/` | Shared, Qt-free code: schema + validation (`db.py`), ranking rules (`ranking.py`), CSV import/export (`csv_io.py`), HTML export, the entry tool's HTML views (`html_views.py`), consistency check | - |
 
 The database is the single source of truth. It is local and gitignored. After every change the entry tool also writes
 `result.csv`, `player_numbers.csv` and `ranking.csv` to `tournaments/<N>/` (derived copies, committed for the GitHub Pages site).
@@ -85,8 +85,8 @@ Validates every row and imports each tournament all-or-nothing. Invalid rows are
 python -m pytest tests     # ~12 s; GUI tests run headless (Qt offscreen platform)
 ```
 
-The rules are kept out of the GUI so they can be tested: ranking and database rules (`tarock_core`), the auto-mode state machine
-(`tarock_presenter/automode.py`) and the display data (`tarock_presenter/viewmodel.py`) are plain Python; the window itself is covered by headless GUI tests.
+The rules are kept out of the GUI so they can be tested: ranking and database rules and the entry tool's HTML views (`tarock_core`), the auto-mode state machine
+(`tarock_presenter/automode.py`) and the display data (`tarock_presenter/viewmodel.py`) are plain Python; both windows (entry tool and presenter) are covered by headless GUI tests.
 
 ---
 

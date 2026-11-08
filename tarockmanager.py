@@ -14,12 +14,11 @@ never be stale; that copy is what gets committed for the GitHub Pages site.
 from __future__ import annotations
 
 import argparse
-import html
 import subprocess
 import sys
 from pathlib import Path
 
-from tarock_core import csv_io, db, html_export, ranking
+from tarock_core import csv_io, db, html_export, html_views, ranking
 from tarock_core.paths import DATA_ROOT, DEFAULT_DB, ordinal, sibling_program
 
 from PyQt6.QtWidgets import (
@@ -38,6 +37,9 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QColor, QIntValidator, QKeySequence, QPalette, QShortcut, QFont
 from PyQt6.QtCore import Qt
+
+
+MIN_MAPPING_ROWS = 20   # rows in the mapping panel; it grows when a tournament has more players
 
 
 class PlayerNumberSpin(QSpinBox):
@@ -115,6 +117,20 @@ class MainWindow(QWidget):
         outer_layout.addLayout(panels)
         self.setLayout(outer_layout)
 
+    def _add_mapping_row(self) -> None:
+        row = len(self.mapping_edits)
+        num_le = QLineEdit()
+        num_le.setPlaceholderText(f"Player № {row + 1}")
+        num_le.setValidator(QIntValidator(0, 9999))
+        num_le.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        self._mapping_grid.addWidget(num_le, row, 0)
+
+        name_le = QLineEdit()
+        name_le.setPlaceholderText(f"Name {row + 1}")
+        name_le.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        self._mapping_grid.addWidget(name_le, row, 1)
+        self.mapping_edits.append((num_le, name_le))
+
     def _build_left_panel(self) -> QWidget:
         container = QWidget()
 
@@ -124,22 +140,11 @@ class MainWindow(QWidget):
         left_grid.setColumnStretch(0, 1)  # number: narrow
         left_grid.setColumnStretch(1, 3)  # name: wide
 
+        self._mapping_grid = left_grid
         self.mapping_edits: list[tuple[QLineEdit, QLineEdit]] = []
         self.mapping: dict[int, str] = {}
-
-        for row in range(20):
-            num_le = QLineEdit()
-            num_le.setPlaceholderText(f"Player № {row + 1}")
-            num_le.setValidator(QIntValidator(0, 9999))
-            num_le.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
-            left_grid.addWidget(num_le, row, 0)
-
-            name_le = QLineEdit()
-            name_le.setPlaceholderText(f"Name {row + 1}")
-            name_le.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
-            left_grid.addWidget(name_le, row, 1)
-
-            self.mapping_edits.append((num_le, name_le))
+        for _ in range(MIN_MAPPING_ROWS):
+            self._add_mapping_row()
 
         grid_widget.setLayout(left_grid)
 
@@ -354,12 +359,9 @@ class MainWindow(QWidget):
     def _load_mapping(self) -> None:
         self.mapping = db.players(self._conn, self._tournament)
         self._update_name_labels()
-        if len(self.mapping) > len(self.mapping_edits):
-            self._set_status(
-                f"{len(self.mapping)} players but only {len(self.mapping_edits)} mapping rows shown.",
-                error=True,
-            )
-        for i, (num_le, name_le) in enumerate(self.mapping_edits):
+        while len(self.mapping_edits) < len(self.mapping):   # every stored player must be visible,
+            self._add_mapping_row()                            # or Save Mapping would delete the hidden ones
+        for num_le, name_le in self.mapping_edits:
             num_le.clear()
             name_le.clear()
         for (num_le, name_le), (num, name) in zip(self.mapping_edits, self.mapping.items()):
@@ -430,84 +432,67 @@ class MainWindow(QWidget):
         box.exec()
         return box.clickedButton() is overwrite
 
+    def _select(self, index: int) -> None:
+        """Show the stored game at `index` in the form and the card."""
+        self.current_index = index
+        self._populate_form(self.games[index])
+        self._display_current_card()
+
     def _show_previous(self) -> None:
         if not self.games:
             self._set_status("No entries stored yet.", error=True)
             return
-        if self.current_index <= 0:
+        if self.current_index == -1:          # blank form (new table): the last stored game is "before" it
+            self._select(len(self.games) - 1)
+        elif self.current_index == 0:
             self._set_status("Already at the first entry.", error=True)
-            return
-        self.current_index -= 1
-        self._populate_form(self.games[self.current_index])
-        self._display_current_card()
+        else:
+            self._select(self.current_index - 1)
 
     def _show_next(self) -> None:
         if not self.games:
             self._set_status("No entries stored yet.", error=True)
             return
-        if self.current_index >= len(self.games) - 1:
+        if self.current_index == -1:          # blank form (new table): continue with the first stored game
+            self._select(0)
+        elif self.current_index >= len(self.games) - 1:
             self._set_status("Already at the last entry.", error=True)
-            return
-        self.current_index += 1
-        self._populate_form(self.games[self.current_index])
-        self._display_current_card()
+        else:
+            self._select(self.current_index + 1)
 
     def _delete_current(self) -> None:
         if not self.games:
             self._set_status("No entries to delete.", error=True)
             return
+        if self.current_index == -1:          # blank form: there is no selected game (index -1 would be the LAST one)
+            self._set_status("No entry selected - open a stored result first (Previous / Next).", error=True)
+            return
+        game = self.games[self.current_index]
         reply = QMessageBox.question(
-            self, "Confirm Delete", f"Delete entry #{self.current_index + 1}?",
+            self, "Confirm Delete",
+            f"Delete round {game.round}, table {game.table} (entry {self.current_index + 1} of {len(self.games)})?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
-        db.delete_game(self._conn, self.games[self.current_index].id)
+        db.delete_game(self._conn, game.id)
         self._after_write()
         if not self.games:
             self.current_index = -1
             self._clear_fields()
             self._set_status("All entries deleted.")
         else:
-            self.current_index = min(self.current_index, len(self.games) - 1)
-            self._populate_form(self.games[self.current_index])
-            self._display_current_card()
+            self._select(min(self.current_index, len(self.games) - 1))
 
     # ------------------------------------------------------------------
-    def _card_html(self, game: db.Game, number: int, total: int) -> str:
-        """One table's result: names side by side on the first line, points below each name.
-
-        Same column order as the entry fields; the top scorer(s) get a tinted column.
-        """
-        top = max(points for _, points in game.seats)
-        names, points_row = [], []
-        for player, points in game.seats:
-            winner = points == top
-            bg = ' bgcolor="#FFF1B8"' if winner else ""
-            color = "#b00020" if points < 0 else "#000"
-            names.append(
-                f'<td align="center" width="25%"{bg} style="padding:4px 8px; border-bottom:2px solid #999; white-space:nowrap;">'
-                f'<span style="color:#999; font-size:small;">#{player}</span>'
-                f' <b>{html.escape(self._name(player))}</b></td>'
-            )
-            points_row.append(
-                f'<td align="center"{bg} style="padding:6px 8px; font-size:xx-large; color:{color};">'
-                f"<b>{points:+d}</b></td>"
-            )
-        return (
-            f'<div style="margin:0 0 6px 0;"><span style="font-size:x-large; font-weight:bold;">'
-            f'Round {game.round} &middot; Table {game.table}</span>'
-            f' &nbsp;<span style="color:#888; font-size:small;">entry {number} of {total}</span></div>'
-            f'<table width="100%" cellspacing="0">'
-            f'<tr>{"".join(names)}</tr><tr>{"".join(points_row)}</tr></table>'
-        )
-
     def _display_current_card(self) -> None:
         if self.current_index == -1 or not self.games:
             self.output_display.clear()
             return
         game = self.games[self.current_index]
-        self.output_display.setHtml(self._card_html(game, self.current_index + 1, len(self.games)))
+        self.output_display.setHtml(
+            html_views.card_html(game, self.current_index + 1, len(self.games), self.mapping)
+        )
         self._clear_status()
 
     def _on_round_or_table_changed(self, *_) -> None:
@@ -547,71 +532,12 @@ class MainWindow(QWidget):
             sb.setValue(points)
 
     # ------------------------------------------------------------------
-    # medal and row tint for ranks 1-3 (by rank, so tied players share them)
-    _RANK_STYLE = {
-        1: ("&#129351;", "#FFF1B8"),
-        2: ("&#129352;", "#E8E8E8"),
-        3: ("&#129353;", "#F3D9BF"),
-    }
-
-    @staticmethod
-    def _round_cell(cumulative: int, points: int | None, cell_style: str) -> str:
-        """The round's own points (main number) + the running total in small light grey.
-
-        points is None when the player sat out: a dash is shown, the total just carries over.
-        """
-        if points is None:
-            main, color = "&ndash;", "#bbb"
-        else:
-            main, color = f"{points:+d}", ("#b00020" if points < 0 else "#333")
-        return (
-            f'<td align="right" style="{cell_style} color:{color};">{main}'
-            f'<br><span style="color:#b5b5b5; font-size:small;">{cumulative:+d}</span></td>'
-        )
-
-    def _ranking_html(self, standings: ranking.Standings) -> str:
-        th = "padding:4px 10px; color:#666; font-weight:normal; border-bottom:2px solid #999;"
-        head = (
-            f'<tr><th align="left" style="{th}">Rank</th>'
-            f'<th align="left" style="{th}">Player</th>'
-            + "".join(f'<th align="right" style="{th}">R{r}</th>' for r in standings.rounds)
-            + f'<th align="right" style="{th}">Total</th></tr>'
-        )
-        rows = []
-        for s in standings.rows:
-            medal, tint = self._RANK_STYLE.get(s.rank, ("", ""))
-            bg = f' bgcolor="{tint}"' if tint else ""
-            tie = '<span style="color:#888;">=</span>' if s.tied else ""
-            cell = "padding:5px 10px; border-bottom:1px solid #ddd;"
-            total_color = "#b00020" if s.total < 0 else "#000"
-            cumulative = standings.cumulative(s.player)
-            round_cells = "".join(
-                self._round_cell(total, s.per_round.get(r), cell)
-                for r, total in zip(standings.rounds, cumulative)
-            )
-            rows.append(
-                f"<tr{bg}>"
-                f'<td style="{cell}"><b>{s.rank}</b>{tie} {medal}</td>'
-                f'<td style="{cell}">'
-                f'<span style="color:#999; font-size:small;">#{s.player}</span>'
-                f' <b>{html.escape(s.name)}</b></td>'
-                f"{round_cells}"
-                f'<td align="right" style="{cell} color:{total_color};"><b>{s.total:+d}</b></td>'
-                f"</tr>"
-            )
-        shared = " = marks a shared rank." if any(s.tied for s in standings.rows) else ""
-        return (
-            f'<h2 style="margin:0 0 6px 0;">Ranking</h2>'
-            f'<table width="100%" cellspacing="0">{head}{"".join(rows)}</table>'
-            f'<p style="color:#888; font-size:small;">Ties: most table wins, then best single round.{shared}</p>'
-        )
-
     def _show_ranking(self) -> None:
         standings = ranking.compute(self.games, self.mapping)
         if not standings.rows:
             self._set_status("No entries to rank.", error=True)
             return
-        self.output_display.setHtml(self._ranking_html(standings))
+        self.output_display.setHtml(html_views.ranking_html(standings))
         self._after_write()
         self._set_status(f"Ranking saved to {self._export_dir / 'ranking.csv'}.")
 
